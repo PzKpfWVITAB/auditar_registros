@@ -150,13 +150,14 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
     lines = ocr_res["lines"]
 
     # 3. Segmentación espacial en 3 zonas
+    # El recuadro superior de inscripción termina aprox. en rel_y = 0.24
     header_lines = []
     body_lines = []
     footer_lines = []
 
     for line in lines:
         rel_y = line["rel_y"]
-        if rel_y < 0.32:
+        if rel_y < 0.24:
             header_lines.append(line)
         elif rel_y > 0.85:
             footer_lines.append(line)
@@ -166,64 +167,124 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
     bounding_boxes = {}
 
     # -------------------------------------------------------------
-    # ZONA 1: Recuadro Superior (Encabezado)
+    # ZONA 1: Recuadro Superior (Encabezado: rel_y < 0.24)
     # -------------------------------------------------------------
     reg_encabezado = None
     fecha_reg_texto = None
     anio_detectado = None
 
-    # a) Búsqueda directa de "Registro: X" o número de registro en el encabezado
+    FORBIDDEN_HEADER_WORDS = (
+        "volante", "recibo", "derecho", "hora", "calificador",
+        "folio", "libro", "sección", "seccion", "notaria",
+        "escritura", "volumen", "tomo", "pagina", "página"
+    )
+
+    # Ubicar referencias Y de "Registro:" y "Fecha de Registro:" en la mitad izquierda
+    y_reg_label = None
+    y_fecha_label = None
+    for l in header_lines:
+        t_low = l["text"].lower()
+        rel_x = l["x"] / img_w if img_w > 0 else 0
+        if rel_x < 0.55 and l["rel_y"] > 0.10:
+            if "fecha" in t_low and "registro" in t_low:
+                y_fecha_label = l["rel_y"]
+            elif "registro" in t_low and "publico" not in t_low and "oficina" not in t_low:
+                y_reg_label = l["rel_y"]
+
+    # a) Búsqueda directa de "Registro: X" en líneas válidas (sin palabras prohibidas)
     for l in header_lines:
         t = l["text"].strip()
-        
-        # Caso A: Registro: 14055
-        m_reg = re.search(r"Registro:\s*(\d+)", t, re.IGNORECASE)
-        if m_reg:
+        t_low = t.lower()
+        if any(bad in t_low for bad in FORBIDDEN_HEADER_WORDS):
+            continue
+
+        m_reg = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", t, re.IGNORECASE)
+        if m_reg and l["rel_y"] > 0.10:
             reg_encabezado = m_reg.group(1)
             bounding_boxes["encabezado"] = {
                 "text": t,
                 "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
-                "color": "#10b981", # Verde
+                "color": "#10b981",  # Verde
                 "label": f"Registro Encabezado: {reg_encabezado}"
             }
             break
 
-        # Caso B: Número aislado en el subrecuadro superior de registro (y < 20% y x < 400)
-        if re.match(r"^\d{4,7}$", t) and l["rel_y"] > 0.10 and l["rel_y"] < 0.22:
-            if not reg_encabezado:
-                reg_encabezado = t
-                bounding_boxes["encabezado"] = {
-                    "text": t,
-                    "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
-                    "color": "#10b981",
-                    "label": f"Registro Encabezado: {reg_encabezado}"
-                }
+    # b) Si "Registro:" estaba en una línea y el número quedó desfasado arriba/al lado
+    #    Solo aceptar números en la mitad izquierda (rel_x < 0.50) y POR ENCIMA de Fecha de Registro
+    if not reg_encabezado:
+        max_allowed_y = y_fecha_label if y_fecha_label is not None else 0.19
+        for l in header_lines:
+            t = l["text"].strip()
+            t_low = t.lower()
+            rel_x = l["x"] / img_w if img_w > 0 else 0
+            if any(bad in t_low for bad in FORBIDDEN_HEADER_WORDS):
+                continue
+            if rel_x < 0.50 and 0.10 < l["rel_y"] < max_allowed_y:
+                if re.match(r"^\d{1,7}$", t):
+                    reg_encabezado = t
+                    bounding_boxes["encabezado"] = {
+                        "text": t,
+                        "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
+                        "color": "#10b981",
+                        "label": f"Registro Encabezado: {reg_encabezado}"
+                    }
+                    break
 
-    # b) Extracción de Fecha de Registro y Año
+    # c) Fallback con zoom 2x únicamente sobre la sub-zona superior izquierda del recuadro de Registro
+    if not reg_encabezado:
+        try:
+            x0, y0 = int(img_w * 0.08), int(img_h * 0.11)
+            x1, y1 = int(img_w * 0.52), int(img_h * 0.19)
+            if x1 > x0 + 20 and y1 > y0 + 10:
+                crop = img.crop((x0, y0, x1, y1))
+                crop_2x = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+                crop_ocr = recognize_image(crop_2x)
+                for cl in crop_ocr["lines"]:
+                    ct = cl["text"].strip()
+                    ct_low = ct.lower()
+                    if any(bad in ct_low for bad in FORBIDDEN_HEADER_WORDS) or "fecha" in ct_low:
+                        continue
+                    m_c = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", ct, re.IGNORECASE)
+                    val = m_c.group(1) if m_c else (ct if re.match(r"^\d{1,7}$", ct) else None)
+                    if val:
+                        reg_encabezado = val
+                        bounding_boxes["encabezado"] = {
+                            "text": ct,
+                            "x": x0 + cl["x"] / 2.0,
+                            "y": y0 + cl["y"] / 2.0,
+                            "w": cl["w"] / 2.0,
+                            "h": cl["h"] / 2.0,
+                            "color": "#10b981",
+                            "label": f"Registro Encabezado: {reg_encabezado}"
+                        }
+                        break
+        except Exception:
+            pass
+
+    # d) Extracción de Fecha de Registro y Año (exclusivo del recuadro superior rel_y < 0.24)
     for l in header_lines:
         t = l["text"].strip()
-        # Busca patrones de fecha como "01 DE SEPTIEMBRE DEL 2011" o "Fecha de Registro: 01 DE SEPTIEMBRE DEL 2011"
-        m_date = re.search(r"(\d{1,2})\s+(?:DE\s+)?([A-Z]+)\s+(?:DEL?\s+)?(\d{4})", t, re.IGNORECASE)
-        if m_date and ("fecha" in t.lower() or "registro" in t.lower() or "septiembre" in t.lower()):
+        t_low = t.lower()
+        m_date = re.search(r"(\d{1,2})\s+(?:DE\s+)?([A-Z]+)\s+(?:DEL?\s+)?(19\d{2}|20\d{2})", t, re.IGNORECASE)
+        if m_date and ("fecha" in t_low or "registro" in t_low or l["rel_y"] > 0.13):
             fecha_reg_texto = m_date.group(0)
-            anio_candidate = int(m_date.group(3))
-            if 1900 <= anio_candidate <= 2099:
-                anio_detectado = anio_candidate
-                bounding_boxes["fecha_registro"] = {
-                    "text": t,
-                    "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
-                    "color": "#6366f1", # Índigo
-                    "label": f"Fecha Registro: {fecha_reg_texto}"
-                }
-                break
+            anio_detectado = int(m_date.group(3))
+            bounding_boxes["fecha_registro"] = {
+                "text": t,
+                "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
+                "color": "#6366f1",  # Índigo
+                "label": f"Fecha Registro: {fecha_reg_texto}"
+            }
+            break
 
-    # Si aún no se detectó el año, buscar cualquier año de 4 dígitos en el encabezado
+    # Si aún no se detectó el año, buscar cualquier año de 4 dígitos dentro del recuadro (rel_y > 0.12)
     if not anio_detectado:
         for l in header_lines:
-            m_year = re.search(r"\b(20\d{2}|19\d{2})\b", l["text"])
-            if m_year:
-                anio_detectado = int(m_year.group(1))
-                break
+            if l["rel_y"] > 0.12:
+                m_year = re.search(r"\b(20\d{2}|19\d{2})\b", l["text"])
+                if m_year:
+                    anio_detectado = int(m_year.group(1))
+                    break
 
     # -------------------------------------------------------------
     # ZONA 2: Cuerpo y Trampa de "ANTECEDENTES"

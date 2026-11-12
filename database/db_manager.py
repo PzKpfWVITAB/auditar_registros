@@ -294,3 +294,110 @@ def execute_safe_rename(doc_id):
         return False, f"Error al renombrar: {e}"
     finally:
         conn.close()
+
+def export_results_to_excel(filepath, estado=None):
+    """
+    Exporta los resultados de auditoría a un archivo Excel (.xlsx).
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    filters = {}
+    if estado and estado != "TODOS":
+        filters["estado"] = estado
+
+    data = get_audit_results(filters=filters, page=1, page_size=100000)
+    items = data["items"]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Auditoría OCR"
+
+    headers = [
+        "ID", "Nombre Actual", "Delegación", "Año Actual", "Reg. Actual",
+        "Reg. Encabezado", "Reg. Pie", "Coinciden Pie/Encabezado",
+        "Reg. Antecedente (Trampa)", "Reg. Final Detectado", "Año Detectado",
+        "Estado Auditoría", "Nombre Propuesto", "Confianza %", "Motivo / Diagnóstico",
+        "Fecha Auditoría", "Ruta Completa"
+    ]
+    ws.append(headers)
+
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+
+    for col_num in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for doc in items:
+        ws.append([
+            doc["id"],
+            doc["nombre_archivo"],
+            doc["delegacion_actual"],
+            doc["anio_actual"],
+            doc["registro_actual"],
+            doc["registro_encabezado"],
+            doc["registro_pie"],
+            "SÍ" if doc["coincide_encabezado_pie"] else "NO",
+            doc["registro_antecedente"],
+            doc["registro_final_detectado"],
+            doc["anio_detectado"],
+            doc["estado"],
+            doc["nombre_propuesto"],
+            doc["confianza_score"],
+            doc["motivo_discrepancia"],
+            str(doc["fecha_auditoria"]),
+            doc["ruta_completa"]
+        ])
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 60)
+
+    wb.save(filepath)
+    return len(items)
+
+def export_results_to_csv(filepath, estado=None):
+    """
+    Exporta los resultados de auditoría a un archivo CSV (UTF-8 con BOM para Excel).
+    """
+    import csv
+
+    filters = {}
+    if estado and estado != "TODOS":
+        filters["estado"] = estado
+
+    data = get_audit_results(filters=filters, page=1, page_size=100000)
+    items = data["items"]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow([
+            "ID", "Nombre Actual", "Delegación", "Año Actual", "Reg. Actual",
+            "Reg. Encabezado", "Reg. Pie", "Coinciden Pie/Encabezado",
+            "Reg. Antecedente", "Reg. Final Detectado", "Año Detectado",
+            "Estado", "Nombre Propuesto", "Confianza", "Motivo", "Ruta Completa"
+        ])
+        for doc in items:
+            writer.writerow([
+                doc["id"],
+                doc["nombre_archivo"],
+                doc["delegacion_actual"],
+                doc["anio_actual"],
+                doc["registro_actual"],
+                doc["registro_encabezado"],
+                doc["registro_pie"],
+                1 if doc["coincide_encabezado_pie"] else 0,
+                doc["registro_antecedente"],
+                doc["registro_final_detectado"],
+                doc["anio_detectado"],
+                doc["estado"],
+                doc["nombre_propuesto"],
+                doc["confianza_score"],
+                doc["motivo_discrepancia"],
+                doc["ruta_completa"]
+            ])
+    return len(items)

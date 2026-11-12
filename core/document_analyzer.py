@@ -170,6 +170,7 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
     # ZONA 1: Recuadro Superior (Encabezado: rel_y < 0.24)
     # -------------------------------------------------------------
     reg_encabezado = None
+    reg_encabezado_labeled = False
     fecha_reg_texto = None
     anio_detectado = None
 
@@ -201,6 +202,7 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
         m_reg = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", t, re.IGNORECASE)
         if m_reg and l["rel_y"] > 0.10:
             reg_encabezado = m_reg.group(1)
+            reg_encabezado_labeled = True
             bounding_boxes["encabezado"] = {
                 "text": t,
                 "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
@@ -220,7 +222,7 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
             if any(bad in t_low for bad in FORBIDDEN_HEADER_WORDS):
                 continue
             if rel_x < 0.50 and 0.10 < l["rel_y"] < max_allowed_y:
-                if re.match(r"^\d{1,7}$", t):
+                if re.match(r"^\d{2,7}$", t):
                     reg_encabezado = t
                     bounding_boxes["encabezado"] = {
                         "text": t,
@@ -245,7 +247,13 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
                     if any(bad in ct_low for bad in FORBIDDEN_HEADER_WORDS) or "fecha" in ct_low:
                         continue
                     m_c = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", ct, re.IGNORECASE)
-                    val = m_c.group(1) if m_c else (ct if re.match(r"^\d{1,7}$", ct) else None)
+                    if m_c:
+                        val = m_c.group(1)
+                        reg_encabezado_labeled = True
+                    elif re.match(r"^\d{2,7}$", ct):
+                        val = ct
+                    else:
+                        val = None
                     if val:
                         reg_encabezado = val
                         bounding_boxes["encabezado"] = {
@@ -344,6 +352,10 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
             coincide_ambos = True
             reg_final = reg_encabezado
             confianza = 100
+        elif not reg_encabezado_labeled and len(reg_pie) >= 4 and len(reg_pie) > len(reg_encabezado):
+            # Si el encabezado fue un fragmento sin etiqueta y el pie tiene un número completo
+            reg_final = reg_pie
+            confianza = 75
         else:
             # Si difieren, priorizamos el encabezado pero con menor confianza
             reg_final = reg_encabezado

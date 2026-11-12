@@ -1,19 +1,40 @@
 import os
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import traceback
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from typing import List, Optional
 
 from config import settings
 from core.document_analyzer import analyze_document
+from core.logger import setup_logging, get_logger
 from database import db_manager
+
+
+def _worker_analyze_file(file_path: str, lote_id: Optional[int]) -> dict:
+    """
+    Función de nivel superior ejecutada en un proceso hijo aislado.
+    Aísla WinRT (winocr) y PyMuPDF del proceso principal de Qt (PySide6).
+    """
+    log = setup_logging("worker")
+    fname = os.path.basename(file_path)
+    log.info("[WORKER START] %s", file_path)
+    try:
+        res = analyze_document(file_path, lote_id=lote_id)
+        log.info("[WORKER OK] %s -> %s (%sms)", fname, res.get("estado"), res.get("tiempo_proceso_ms"))
+        return res
+    except Exception as e:
+        log.error("[WORKER ERROR] %s: %s\n%s", fname, e, traceback.format_exc())
+        raise
+
 
 class AuditorManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.status = "IDLE"  # IDLE, RUNNING, STOPPED, COMPLETED
         self.should_stop = False
-        
+
         self.lote_id: Optional[int] = None
         self.directorio: str = ""
         self.total_files: int = 0
@@ -49,7 +70,15 @@ class AuditorManager:
                 "recent_logs": self.logs[-15:]
             }
 
-    def add_log(self, msg: str):
+    def add_log(self, msg: str, level: str = "info"):
+        log = get_logger()
+        if level == "error":
+            log.error(msg)
+        elif level == "critical":
+            log.critical(msg)
+        else:
+            log.info(msg)
+
         with self.lock:
             timestamp = time.strftime("%H:%M:%S")
             self.logs.append(f"[{timestamp}] {msg}")
@@ -66,7 +95,7 @@ class AuditorManager:
         with self.lock:
             if self.status == "RUNNING":
                 return False, "Ya hay una auditoría en curso."
-            
+
             self.status = "RUNNING"
             self.should_stop = False
             self.directorio = directory
@@ -91,7 +120,7 @@ class AuditorManager:
     def _discover_files(self, directory: str, recursive: bool, limit: Optional[int]) -> List[str]:
         pdf_files = []
         if not os.path.exists(directory):
-            self.add_log(f"ERROR: El directorio '{directory}' no existe o no es accesible.")
+            self.add_log(f"ERROR: El directorio '{directory}' no existe o no es accesible.", level="error")
             return []
 
         try:
@@ -110,104 +139,174 @@ class AuditorManager:
                             if limit and len(pdf_files) >= limit:
                                 return pdf_files
         except Exception as e:
-            self.add_log(f"Error explorando directorio: {str(e)}")
-            
+            self.add_log(f"Error explorando directorio: {str(e)}\n{traceback.format_exc()}", level="error")
+
         return pdf_files
 
-    def _run_audit_worker(self, directory: str, recursive: bool, limit: Optional[int]):
-        self.add_log(f"Iniciando escaneo en: {directory}")
-        
-        # 1. Crear lote en MySQL
+    def _record_crash_result(self, file_path: str, reason: str):
+        fname = os.path.basename(file_path)
+        crash_doc = {
+            "lote_id": self.lote_id,
+            "nombre_archivo": fname,
+            "ruta_completa": file_path,
+            "tamano_bytes": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+            "estado": "ERROR_LECTURA",
+            "confianza_score": 0,
+            "motivo_discrepancia": reason,
+            "bounding_boxes": {},
+            "tiempo_proceso_ms": 0
+        }
         try:
-            self.lote_id = db_manager.create_lote(directory)
-            self.add_log(f"Lote de auditoría #{self.lote_id} creado en base de datos.")
-        except Exception as e:
-            self.add_log(f"Advertencia: No se pudo registrar lote en MySQL: {e}")
-            self.lote_id = None
+            db_manager.save_audit_result(crash_doc)
+        except Exception as db_err:
+            self.add_log(f"Error guardando fallo en MySQL ({fname}): {db_err}", level="error")
 
-        # 2. Descubrir archivos
-        files = self._discover_files(directory, recursive, limit)
-        with self.lock:
-            self.total_files = len(files)
+    def _run_audit_worker(self, directory: str, recursive: bool, limit: Optional[int]):
+        try:
+            self.add_log(f"Iniciando escaneo en: {directory}")
 
-        if not files:
-            self.add_log("No se encontraron archivos PDF para analizar.")
-            with self.lock:
-                self.status = "COMPLETED"
-                self.elapsed_seconds = time.time() - self.start_time
-            if self.lote_id:
-                db_manager.update_lote_summary(self.lote_id, 0, 0, 0, 0, "COMPLETADO")
-            return
-
-        self.add_log(f"Se encontraron {len(files)} archivos para auditar. Procesando con {settings.MAX_WORKERS} hilos...")
-
-        # 3. Procesamiento en paralelo
-        max_workers = min(settings.MAX_WORKERS, max(1, len(files)))
-        
-        def process_single_file(file_path):
-            if self.should_stop:
-                return None
-            res = analyze_document(file_path, lote_id=self.lote_id)
-            # Guardar en MySQL inmediatamente
+            # 1. Crear lote en MySQL
             try:
-                db_manager.save_audit_result(res)
+                self.lote_id = db_manager.create_lote(directory)
+                self.add_log(f"Lote de auditoría #{self.lote_id} creado en base de datos.")
             except Exception as e:
-                self.add_log(f"Error guardando en MySQL ({os.path.basename(file_path)}): {e}")
-            return res
+                self.add_log(f"Advertencia: No se pudo registrar lote en MySQL: {e}", level="error")
+                self.lote_id = None
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_file = {executor.submit(process_single_file, f): f for f in files}
+            # 2. Descubrir archivos
+            files = self._discover_files(directory, recursive, limit)
+            with self.lock:
+                self.total_files = len(files)
 
-            for future in as_completed(future_to_file):
-                if self.should_stop:
-                    break
+            if not files:
+                self.add_log("No se encontraron archivos PDF para analizar.")
+                with self.lock:
+                    self.status = "COMPLETED"
+                    self.elapsed_seconds = time.time() - self.start_time
+                if self.lote_id:
+                    db_manager.update_lote_summary(self.lote_id, 0, 0, 0, 0, "COMPLETADO")
+                return
 
-                file_path = future_to_file[future]
+            max_workers = min(settings.MAX_WORKERS, max(1, len(files)))
+            self.add_log(f"Se encontraron {len(files)} archivos. Procesando en procesos aislados ({max_workers} workers)...")
+
+            # 3. Procesar secuencialmente por lotes en ProcessPoolExecutor para aislar fallos catastróficos
+            idx = 0
+            while idx < len(files) and not self.should_stop:
+                file_path = files[idx]
                 fname = os.path.basename(file_path)
+                with self.lock:
+                    self.current_file = fname
 
                 try:
-                    res = future.result()
-                    if res is None:
-                        continue
+                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        # Enviar en bloques para poder recuperarnos ante un BrokenProcessPool si un PDF crashea en C/WinRT
+                        while idx < len(files) and not self.should_stop:
+                            batch = files[idx:idx + max_workers]
+                            futures = [(f, executor.submit(_worker_analyze_file, f, self.lote_id)) for f in batch]
 
-                    with self.lock:
-                        self.processed_files += 1
-                        self.current_file = fname
-                        
-                        estado = res.get("estado")
-                        if estado == "CORRECTO":
-                            self.correct_files += 1
-                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
-                            self.discrepancy_files += 1
-                            self.add_log(f"[DISCREPANCIA] {fname} -> Sugerido: {res.get('nombre_propuesto')}")
-                        else:
-                            self.error_files += 1
+                            for f_path, fut in futures:
+                                if self.should_stop:
+                                    break
+                                f_name = os.path.basename(f_path)
+                                try:
+                                    res = fut.result(timeout=60)
+                                    try:
+                                        db_manager.save_audit_result(res)
+                                    except Exception as db_err:
+                                        self.add_log(f"Error MySQL ({f_name}): {db_err}", level="error")
 
-                except Exception as e:
-                    with self.lock:
-                        self.processed_files += 1
-                        self.error_files += 1
-                    self.add_log(f"Error procesando {fname}: {str(e)}")
+                                    with self.lock:
+                                        self.processed_files += 1
+                                        self.current_file = f_name
+                                        estado = res.get("estado")
+                                        if estado == "CORRECTO":
+                                            self.correct_files += 1
+                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                            self.discrepancy_files += 1
+                                            self.add_log(f"[DISCREPANCIA] {f_name} -> Sugerido: {res.get('nombre_propuesto')}")
+                                        else:
+                                            self.error_files += 1
 
-        with self.lock:
-            self.status = "COMPLETED" if not self.should_stop else "STOPPED"
-            self.elapsed_seconds = time.time() - self.start_time
+                                except BrokenProcessPool:
+                                    raise
+                                except Exception as e:
+                                    self.add_log(f"Error procesando {f_name}: {e}", level="error")
+                                    self._record_crash_result(f_path, f"Error procesando archivo: {e}")
+                                    with self.lock:
+                                        self.processed_files += 1
+                                        self.error_files += 1
 
-        self.add_log(
-            f"Auditoría finalizada. Total: {self.processed_files}/{self.total_files} | "
-            f"Correctos: {self.correct_files} | Discrepancias: {self.discrepancy_files} | Errores: {self.error_files}"
-        )
+                                idx += 1
 
-        if self.lote_id:
-            lote_estado = "COMPLETADO" if self.status == "COMPLETED" else "CANCELADO"
-            db_manager.update_lote_summary(
-                self.lote_id,
-                self.processed_files,
-                self.correct_files,
-                self.discrepancy_files,
-                self.error_files,
-                lote_estado
+                except BrokenProcessPool:
+                    # Un proceso hijo murió por fallo nativo (C/WinRT); la GUI sigue intacta
+                    self.add_log(
+                        f"FALLO CATASTRÓFICO DE WORKER al procesar bloque cerca de '{fname}'. "
+                        f"Reintentando de uno en uno para aislar el PDF dañado.",
+                        level="critical"
+                    )
+                    # Procesar el archivo actual de forma individual aislada
+                    for f_path in files[idx:idx + max_workers]:
+                        if self.should_stop:
+                            break
+                        f_name = os.path.basename(f_path)
+                        try:
+                            with ProcessPoolExecutor(max_workers=1) as single_exec:
+                                res = single_exec.submit(_worker_analyze_file, f_path, self.lote_id).result(timeout=60)
+                            db_manager.save_audit_result(res)
+                            with self.lock:
+                                self.processed_files += 1
+                                estado = res.get("estado")
+                                if estado == "CORRECTO":
+                                    self.correct_files += 1
+                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                    self.discrepancy_files += 1
+                                else:
+                                    self.error_files += 1
+                        except Exception as single_err:
+                            self.add_log(
+                                f"PDF CAUSANTE DE CRASH AISLADO: {f_path} -> {single_err}",
+                                level="critical"
+                            )
+                            self._record_crash_result(
+                                f_path,
+                                f"Fallo catastrófico al leer/OCR el archivo (aislado sin cerrar el sistema): {single_err}"
+                            )
+                            with self.lock:
+                                self.processed_files += 1
+                                self.error_files += 1
+                        idx += 1
+
+        except Exception as fatal_err:
+            self.add_log(
+                f"ERROR FATAL EN HILO AUDITOR:\n{fatal_err}\n{traceback.format_exc()}",
+                level="critical"
             )
+        finally:
+            with self.lock:
+                self.status = "COMPLETED" if not self.should_stop else "STOPPED"
+                self.elapsed_seconds = time.time() - self.start_time
+
+            self.add_log(
+                f"Auditoría finalizada. Total: {self.processed_files}/{self.total_files} | "
+                f"Correctos: {self.correct_files} | Discrepancias: {self.discrepancy_files} | Errores: {self.error_files}"
+            )
+
+            if self.lote_id:
+                try:
+                    lote_estado = "COMPLETADO" if self.status == "COMPLETED" else "CANCELADO"
+                    db_manager.update_lote_summary(
+                        self.lote_id,
+                        self.processed_files,
+                        self.correct_files,
+                        self.discrepancy_files,
+                        self.error_files,
+                        lote_estado
+                    )
+                except Exception as db_err:
+                    self.add_log(f"Error actualizando resumen de lote: {db_err}", level="error")
+
 
 # Instancia global del auditor
 auditor_instance = AuditorManager()

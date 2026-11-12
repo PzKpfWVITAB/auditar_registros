@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auditoría de Registros OCR | RPPC</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-['Inter']">
+
+    <!-- Navbar Superior -->
+    <header class="bg-slate-800/80 backdrop-blur border-b border-slate-700 sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                    <i class="fa-solid fa-file-shield text-white text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                        Sistema de Auditoría Registral OCR
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">v1.0 Pro</span>
+                    </h1>
+                    <p class="text-xs text-slate-400">Verificación espacial y detección de discrepancias en inscripciones PDF</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <!-- Estado MySQL -->
+                <div id="db-status-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>MySQL: {{ db_name }}</span>
+                </div>
+
+                <!-- Botón Herramientas de BD -->
+                <button onclick="openDbModal()" class="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium transition flex items-center gap-2 border border-slate-600">
+                    <i class="fa-solid fa-database text-blue-400"></i>
+                    <span>Base de Datos Limpia</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+        <!-- Panel de Control y Configuración de Escaneo -->
+        <div class="bg-slate-800/90 border border-slate-700 rounded-2xl p-5 shadow-xl">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
+                <!-- Campo de Directorio -->
+                <div class="lg:col-span-7 space-y-1.5">
+                    <label class="text-xs font-medium text-slate-300 flex items-center justify-between">
+                        <span class="flex items-center gap-1.5">
+                            <i class="fa-solid fa-folder-open text-amber-400"></i>
+                            Ruta del Directorio a Analizar (Local o Red UNC)
+                        </span>
+                        <button onclick="setPath('{{ default_scan_path }}')" class="text-xs text-blue-400 hover:underline">
+                            Restaurar ruta de red por defecto
+                        </button>
+                    </label>
+                    <div class="relative">
+                        <input type="text" id="scan-directory" value="{{ default_scan_path }}" 
+                               placeholder="\\172.40.5.84\ssdirec\COPIA_REGISTROS o C:\pdfs"
+                               class="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono">
+                    </div>
+                </div>
+
+                <!-- Opciones Rápidas -->
+                <div class="lg:col-span-2 space-y-1.5">
+                    <label class="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                        <i class="fa-solid fa-sliders text-indigo-400"></i>
+                        Límite de Prueba
+                    </label>
+                    <select id="scan-limit" class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-blue-500 font-medium">
+                        <option value="">Sin límite (Todos)</option>
+                        <option value="10">10 archivos (Prueba rápida)</option>
+                        <option value="50">50 archivos</option>
+                        <option value="200">200 archivos</option>
+                    </select>
+                </div>
+
+                <!-- Botones de Acción -->
+                <div class="lg:col-span-3 flex items-center gap-2">
+                    <button id="btn-start-scan" onclick="startScan()" 
+                            class="flex-1 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-medium px-4 py-2.5 rounded-xl shadow-lg shadow-emerald-600/20 transition flex items-center justify-center gap-2 text-sm">
+                        <i class="fa-solid fa-play"></i>
+                        <span>Iniciar Auditoría</span>
+                    </button>
+
+                    <button id="btn-stop-scan" onclick="stopScan()" disabled
+                            class="px-4 py-2.5 rounded-xl bg-rose-600/20 border border-rose-500/40 text-rose-300 font-medium hover:bg-rose-600/30 transition disabled:opacity-40 disabled:cursor-not-allowed text-sm flex items-center gap-1.5">
+                        <i class="fa-solid fa-stop"></i>
+                        <span>Detener</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Barra de Progreso en Vivo -->
+            <div id="progress-container" class="mt-4 pt-4 border-t border-slate-700/60 hidden">
+                <div class="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+                    <div class="flex items-center gap-2">
+                        <span id="scan-status-badge" class="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-medium border border-blue-500/30">
+                            Analizando...
+                        </span>
+                        <span id="progress-current-file" class="font-mono text-slate-300 truncate max-w-md"></span>
+                    </div>
+                    <div class="font-medium text-slate-200">
+                        <span id="progress-processed">0</span> / <span id="progress-total">0</span> 
+                        (<span id="progress-percent">0.0%</span>) | <span id="progress-speed">0 docs/s</span>
+                    </div>
+                </div>
+                <div class="w-full bg-slate-900 rounded-full h-2.5 overflow-hidden border border-slate-700">
+                    <div id="progress-bar-fill" class="bg-gradient-to-r from-blue-500 to-emerald-400 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tarjetas de Métricas (KPIs) -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <!-- Total Analizados -->
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-4 shadow">
+                <div class="flex items-center justify-between text-slate-400 text-xs font-medium">
+                    <span>Total Auditados</span>
+                    <i class="fa-solid fa-folder-tree text-slate-400"></i>
+                </div>
+                <div id="kpi-total" class="text-2xl font-bold text-white mt-2">0</div>
+                <div class="text-[11px] text-slate-500 mt-1">Expedientes procesados</div>
+            </div>
+
+            <!-- 100% Correctos -->
+            <div class="bg-slate-800/80 border border-emerald-500/30 rounded-xl p-4 shadow bg-emerald-500/5">
+                <div class="flex items-center justify-between text-emerald-400 text-xs font-medium">
+                    <span>Correctos</span>
+                    <i class="fa-solid fa-circle-check text-emerald-400"></i>
+                </div>
+                <div id="kpi-correctos" class="text-2xl font-bold text-emerald-400 mt-2">0</div>
+                <div class="text-[11px] text-slate-400 mt-1">Nombres 100% validados</div>
+            </div>
+
+            <!-- Con Discrepancias -->
+            <div class="bg-slate-800/80 border border-amber-500/30 rounded-xl p-4 shadow bg-amber-500/5">
+                <div class="flex items-center justify-between text-amber-400 text-xs font-medium">
+                    <span>Con Discrepancias</span>
+                    <i class="fa-solid fa-triangle-exclamation text-amber-400"></i>
+                </div>
+                <div id="kpi-discrepancias" class="text-2xl font-bold text-amber-400 mt-2">0</div>
+                <div class="text-[11px] text-amber-300/70 mt-1">Requieren corrección</div>
+            </div>
+
+            <!-- Errores de Lectura -->
+            <div class="bg-slate-800/80 border border-rose-500/30 rounded-xl p-4 shadow bg-rose-500/5">
+                <div class="flex items-center justify-between text-rose-400 text-xs font-medium">
+                    <span>Errores de Lectura</span>
+                    <i class="fa-solid fa-circle-xmark text-rose-400"></i>
+                </div>
+                <div id="kpi-errores" class="text-2xl font-bold text-rose-400 mt-2">0</div>
+                <div class="text-[11px] text-slate-400 mt-1">Ilegibles o formato inválido</div>
+            </div>
+
+            <!-- Tasa de Error -->
+            <div class="bg-slate-800/80 border border-indigo-500/30 rounded-xl p-4 shadow bg-indigo-500/5 col-span-2 md:col-span-1">
+                <div class="flex items-center justify-between text-indigo-400 text-xs font-medium">
+                    <span>Tasa Discrepancia</span>
+                    <i class="fa-solid fa-chart-pie text-indigo-400"></i>
+                </div>
+                <div id="kpi-tasa" class="text-2xl font-bold text-indigo-300 mt-2">0.0%</div>
+                <div class="text-[11px] text-slate-400 mt-1">Porcentaje de error previo</div>
+            </div>
+        </div>
+
+        <!-- Tabla Interactiva de Documentos Auditados -->
+        <div class="bg-slate-800/90 border border-slate-700 rounded-2xl shadow-xl overflow-hidden">
+            <!-- Barra de Herramientas de la Tabla -->
+            <div class="p-4 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3 bg-slate-800/50">
+                <div class="flex items-center gap-2">
+                    <button onclick="setFilter('TODOS')" id="tab-todos" class="filter-tab active px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white">
+                        Todos (<span id="count-todos">0</span>)
+                    </button>
+                    <button onclick="setFilter('DISCREPANCIAS')" id="tab-discrepancias" class="filter-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                        Solo Discrepancias (<span id="count-discrepancias">0</span>)
+                    </button>
+                    <button onclick="setFilter('CORRECTO')" id="tab-correctos" class="filter-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                        Correctos
+                    </button>
+                    <button onclick="setFilter('ERROR_LECTURA')" id="tab-errores" class="filter-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 text-slate-300 hover:bg-slate-600">
+                        Errores
+                    </button>
+                </div>
+
+                <div class="flex items-center gap-3">
+                    <!-- Búsqueda rápida -->
+                    <div class="relative">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+                        <input type="text" id="table-search" placeholder="Buscar archivo o número..." 
+                               oninput="debounceSearch()"
+                               class="bg-slate-900 border border-slate-600 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500 w-56">
+                    </div>
+
+                    <!-- Botones de Exportación -->
+                    <a href="/api/export/excel" target="_blank" class="px-3 py-1.5 rounded-lg bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30 text-xs font-medium flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-file-excel text-emerald-400"></i>
+                        <span>Exportar Excel</span>
+                    </a>
+                    <a href="/api/export/csv" target="_blank" class="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-file-csv text-blue-400"></i>
+                        <span>CSV</span>
+                    </a>
+                    <button onclick="loadTableData()" title="Refrescar datos" class="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs transition">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tabla de Datos -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs text-slate-300">
+                    <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider text-[11px] border-b border-slate-700">
+                        <tr>
+                            <th class="py-3 px-4">Estado</th>
+                            <th class="py-3 px-4">Archivo Actual</th>
+                            <th class="py-3 px-4 text-center">Reg. Actual</th>
+                            <th class="py-3 px-4 text-center">Reg. Encabezado</th>
+                            <th class="py-3 px-4 text-center">Reg. Pie</th>
+                            <th class="py-3 px-4 text-center">Doble Marca</th>
+                            <th class="py-3 px-4 text-center">Antecedente (Trampa)</th>
+                            <th class="py-3 px-4">Nombre Propuesto</th>
+                            <th class="py-3 px-4 text-center">Confianza</th>
+                            <th class="py-3 px-4">Diagnóstico / Motivo</th>
+                            <th class="py-3 px-4 text-center">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="table-body" class="divide-y divide-slate-700/60">
+                        <!-- Filas insertadas dinámicamente -->
+                        <tr>
+                            <td colspan="11" class="text-center py-8 text-slate-500">
+                                <i class="fa-solid fa-folder-open text-2xl mb-2 text-slate-600 block"></i>
+                                No hay documentos auditados aún. Inicia una auditoría para comenzar.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Paginación -->
+            <div class="p-3 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-400 bg-slate-800/40">
+                <div>
+                    Mostrando <span id="page-start" class="font-medium text-slate-200">0</span> - 
+                    <span id="page-end" class="font-medium text-slate-200">0</span> de 
+                    <span id="page-total" class="font-medium text-slate-200">0</span> registros
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <button id="btn-prev-page" onclick="changePage(-1)" disabled class="px-2.5 py-1 rounded bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-600 transition">
+                        <i class="fa-solid fa-chevron-left"></i>
+                    </button>
+                    <span class="px-2 text-slate-300">Pág. <span id="current-page">1</span></span>
+                    <button id="btn-next-page" onclick="changePage(1)" disabled class="px-2.5 py-1 rounded bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-600 transition">
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- MODAL: Inspección Visual con Bounding Boxes -->
+    <div id="preview-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            <!-- Modal Header -->
+            <div class="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-900/60">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center border border-blue-500/30">
+                        <i class="fa-solid fa-eye"></i>
+                    </div>
+                    <div>
+                        <h3 id="modal-doc-title" class="text-sm font-bold text-white font-mono">01_2011_233.pdf</h3>
+                        <p id="modal-doc-subtitle" class="text-xs text-slate-400">Inspección espacial de página 1 con áreas detectadas</p>
+                    </div>
+                </div>
+                <button onclick="closePreviewModal()" class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-700 transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Modal Body (Visor Imagen + Panel Técnico) -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 flex-1 overflow-hidden">
+                <!-- Visor de Imagen con scroll -->
+                <div class="lg:col-span-8 bg-slate-950 flex items-center justify-center overflow-auto p-4 border-r border-slate-700 max-h-[70vh]">
+                    <img id="modal-preview-img" src="" alt="Vista previa de auditoría" class="max-w-full max-h-full object-contain rounded-lg shadow-lg border border-slate-800">
+                </div>
+
+                <!-- Detalle Técnico y Explicación -->
+                <div class="lg:col-span-4 p-5 space-y-4 overflow-y-auto max-h-[70vh] bg-slate-800/60">
+                    <div>
+                        <h4 class="text-xs uppercase font-bold text-slate-400 tracking-wider mb-2">Leyenda de Detección</h4>
+                        <div class="space-y-2 text-xs">
+                            <div class="flex items-center gap-2 p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+                                <span class="w-3 h-3 rounded bg-emerald-500"></span>
+                                <div>
+                                    <div class="font-bold">Verde: Encabezado</div>
+                                    <div id="modal-box-header" class="text-[11px] text-slate-300">Registro: --</div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-300">
+                                <span class="w-3 h-3 rounded bg-blue-500"></span>
+                                <div>
+                                    <div class="font-bold">Azul: Pie de Página</div>
+                                    <div id="modal-box-footer" class="text-[11px] text-slate-300">Registro: --</div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 p-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300">
+                                <span class="w-3 h-3 rounded bg-rose-500"></span>
+                                <div>
+                                    <div class="font-bold">Rojo: Antecedentes (Trampa)</div>
+                                    <div id="modal-box-ant" class="text-[11px] text-slate-300">Registro: --</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-slate-700 pt-3">
+                        <h4 class="text-xs uppercase font-bold text-slate-400 tracking-wider mb-1.5">Diagnóstico del Auditor</h4>
+                        <p id="modal-motivo" class="text-xs text-slate-300 leading-relaxed bg-slate-900/60 p-3 rounded-lg border border-slate-700"></p>
+                    </div>
+
+                    <div class="border-t border-slate-700 pt-3 space-y-2 text-xs">
+                        <div class="flex justify-between">
+                            <span class="text-slate-400">Nombre Actual:</span>
+                            <span id="modal-actual-name" class="font-mono text-amber-300"></span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-400">Nombre Propuesto:</span>
+                            <span id="modal-propuesto-name" class="font-mono text-emerald-400 font-bold"></span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-400">Nivel de Confianza:</span>
+                            <span id="modal-confianza" class="font-bold text-blue-400">100%</span>
+                        </div>
+                    </div>
+
+                    <div id="modal-action-box" class="pt-2">
+                        <button id="btn-modal-rename" onclick="applySingleRename()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-2 rounded-xl text-xs transition flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-signature"></i>
+                            <span>Aplicar Renombrado a este Archivo</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Herramientas de Base de Datos -->
+    <div id="db-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+                <h3 class="text-base font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-database text-blue-400"></i>
+                    Herramientas de Base de Datos MySQL
+                </h3>
+                <button onclick="closeDbModal()" class="text-slate-400 hover:text-white">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <p class="text-xs text-slate-300 leading-relaxed">
+                El sistema interactúa con la base de datos <strong class="text-blue-300">{{ db_name }}</strong> en MySQL de Laragon. Puedes reparar la estructura o vaciar los datos existentes con un solo clic:
+            </p>
+
+            <div class="space-y-3">
+                <!-- Inicializar / Reparar Seguro -->
+                <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs font-bold text-slate-200">Inicializar / Reparar Estructura</div>
+                        <div class="text-[11px] text-slate-400">Crea la base de datos y tablas si no existen, sin tocar datos previos.</div>
+                    </div>
+                    <button onclick="runDbAction('init', false)" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium whitespace-nowrap transition">
+                        Inicializar
+                    </button>
+                </div>
+
+                <!-- Recrear Base Limpia (Clean) -->
+                <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs font-bold text-amber-300">Generar Base de Datos Limpia</div>
+                        <div class="text-[11px] text-slate-400">Recrea la base de datos desde cero con todas las tablas vacías.</div>
+                    </div>
+                    <button onclick="runDbAction('init', true)" class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium whitespace-nowrap transition">
+                        Limpiar Todo
+                    </button>
+                </div>
+
+                <!-- Vaciar Registros (Truncate) -->
+                <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs font-bold text-rose-300">Vaciar Auditorías Anteriores</div>
+                        <div class="text-[11px] text-slate-400">Borra los registros de auditoría anteriores para un nuevo inicio.</div>
+                    </div>
+                    <button onclick="runDbAction('reset', false)" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium whitespace-nowrap transition">
+                        Vaciar Tablas
+                    </button>
+                </div>
+            </div>
+
+            <div id="db-action-msg" class="text-xs p-2.5 rounded-lg hidden"></div>
+        </div>
+    </div>
+
+    <!-- Script de lógica de la aplicación -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

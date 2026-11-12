@@ -1,0 +1,46 @@
+/* Custom CSS for Auditoría Registros OCR */
+
+/* Scrollbars styling */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Animations */
+@keyframes pulseFast {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+.animate-pulse-fast {
+    animation: pulseFast 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Badge styles */
+.badge-discrepancia {
+    background-color: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.badge-correcto {
+    background-color: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-error {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}

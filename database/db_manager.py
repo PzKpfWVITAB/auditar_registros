@@ -136,6 +136,74 @@ def save_audit_result(doc):
     finally:
         conn.close()
 
+def update_audit_result(doc_id, doc):
+    """
+    Actualiza un registro existente en documentos_auditados (usado al reintentar errores).
+    """
+    conn = get_raw_connection(include_database=True)
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                UPDATE `documentos_auditados`
+                SET `delegacion_actual` = %(delegacion_actual)s,
+                    `anio_actual` = %(anio_actual)s,
+                    `registro_actual` = %(registro_actual)s,
+                    `registro_encabezado` = %(registro_encabezado)s,
+                    `registro_pie` = %(registro_pie)s,
+                    `anio_detectado` = %(anio_detectado)s,
+                    `fecha_registro_texto` = %(fecha_registro_texto)s,
+                    `registro_antecedente` = %(registro_antecedente)s,
+                    `registro_final_detectado` = %(registro_final_detectado)s,
+                    `coincide_encabezado_pie` = %(coincide_encabezado_pie)s,
+                    `estado` = %(estado)s,
+                    `nombre_propuesto` = %(nombre_propuesto)s,
+                    `confianza_score` = %(confianza_score)s,
+                    `motivo_discrepancia` = %(motivo_discrepancia)s,
+                    `bounding_boxes_json` = %(bounding_boxes_json)s,
+                    `tiempo_proceso_ms` = %(tiempo_proceso_ms)s,
+                    `fecha_auditoria` = NOW()
+                WHERE `id` = %(id)s;
+            """
+            cursor.execute(sql, {
+                "id": doc_id,
+                "delegacion_actual": doc.get("delegacion_actual"),
+                "anio_actual": doc.get("anio_actual"),
+                "registro_actual": doc.get("registro_actual"),
+                "registro_encabezado": doc.get("registro_encabezado"),
+                "registro_pie": doc.get("registro_pie"),
+                "anio_detectado": doc.get("anio_detectado"),
+                "fecha_registro_texto": doc.get("fecha_registro_texto"),
+                "registro_antecedente": doc.get("registro_antecedente"),
+                "registro_final_detectado": doc.get("registro_final_detectado"),
+                "coincide_encabezado_pie": 1 if doc.get("coincide_encabezado_pie") else 0,
+                "estado": doc.get("estado"),
+                "nombre_propuesto": doc.get("nombre_propuesto"),
+                "confianza_score": doc.get("confianza_score", 0),
+                "motivo_discrepancia": doc.get("motivo_discrepancia"),
+                "bounding_boxes_json": json.dumps(doc.get("bounding_boxes", {}), ensure_ascii=False),
+                "tiempo_proceso_ms": doc.get("tiempo_proceso_ms", 0)
+            })
+            return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def get_error_documents():
+    """
+    Retorna todos los documentos marcados con estado de error para poder reintentarlos.
+    """
+    conn = get_raw_connection(include_database=True)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT id, nombre_archivo, ruta_completa, lote_id
+                FROM `documentos_auditados`
+                WHERE estado IN ('ERROR_LECTURA', 'NOMBRE_INVALIDO')
+                ORDER BY id ASC;
+            """)
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
 def get_audit_summary(lote_id=None):
     """
     Retorna las métricas cuantitativas clave de la auditoría.

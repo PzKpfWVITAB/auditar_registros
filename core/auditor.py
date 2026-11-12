@@ -117,6 +117,131 @@ class AuditorManager:
         self._thread.start()
         return True, "Auditoría iniciada correctamente."
 
+    def start_retry_errors(self):
+        """
+        Reintenta todos los documentos que quedaron con estado ERROR_LECTURA o NOMBRE_INVALIDO,
+        actualizando sus registros existentes en MySQL.
+        """
+        error_docs = db_manager.get_error_documents()
+        if not error_docs:
+            return False, "No hay documentos con error pendientes de reintentar."
+
+        with self.lock:
+            if self.status == "RUNNING":
+                return False, "Ya hay una auditoría o reintento en curso."
+
+            self.status = "RUNNING"
+            self.should_stop = False
+            self.directorio = "Reintento de errores"
+            self.total_files = len(error_docs)
+            self.processed_files = 0
+            self.correct_files = 0
+            self.discrepancy_files = 0
+            self.error_files = 0
+            self.current_file = ""
+            self.start_time = time.time()
+            self.elapsed_seconds = 0
+            self.logs = []
+
+        self._thread = threading.Thread(
+            target=self._run_retry_worker,
+            args=(error_docs,),
+            daemon=True
+        )
+        self._thread.start()
+        return True, f"Reintentando {len(error_docs)} documentos con error."
+
+    def retry_single_document(self, doc_id: int):
+        """
+        Reintenta un único documento por su ID en un proceso aislado y actualiza MySQL.
+        """
+        doc = db_manager.get_document_by_id(doc_id)
+        if not doc:
+            return False, "Documento no encontrado en base de datos.", None
+
+        file_path = doc["ruta_completa"]
+        try:
+            with ProcessPoolExecutor(max_workers=1) as single_exec:
+                res = single_exec.submit(_worker_analyze_file, file_path, doc.get("lote_id")).result(timeout=60)
+            db_manager.update_audit_result(doc_id, res)
+            return True, f"Reintento completado: {res.get('estado')}", res
+        except Exception as e:
+            self.add_log(f"Error reintentando documento ID={doc_id} ({file_path}): {e}", level="error")
+            return False, f"Falló el reintento: {e}", None
+
+    def _run_retry_worker(self, error_docs: List[dict]):
+        try:
+            self.add_log(f"Iniciando reintento de {len(error_docs)} archivos con error...")
+            max_workers = min(settings.MAX_WORKERS, max(1, len(error_docs)))
+
+            idx = 0
+            while idx < len(error_docs) and not self.should_stop:
+                batch = error_docs[idx:idx + max_workers]
+                try:
+                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                        while idx < len(error_docs) and not self.should_stop:
+                            batch = error_docs[idx:idx + max_workers]
+                            futures = [
+                                (item, executor.submit(_worker_analyze_file, item["ruta_completa"], item.get("lote_id")))
+                                for item in batch
+                            ]
+
+                            for item, fut in futures:
+                                if self.should_stop:
+                                    break
+                                f_name = item["nombre_archivo"]
+                                try:
+                                    res = fut.result(timeout=60)
+                                    db_manager.update_audit_result(item["id"], res)
+                                    with self.lock:
+                                        self.processed_files += 1
+                                        self.current_file = f_name
+                                        estado = res.get("estado")
+                                        if estado == "CORRECTO":
+                                            self.correct_files += 1
+                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                            self.discrepancy_files += 1
+                                        else:
+                                            self.error_files += 1
+                                except BrokenProcessPool:
+                                    raise
+                                except Exception as e:
+                                    self.add_log(f"Error en reintento de {f_name}: {e}", level="error")
+                                    with self.lock:
+                                        self.processed_files += 1
+                                        self.error_files += 1
+                                idx += 1
+                except BrokenProcessPool:
+                    self.add_log("Worker falló en reintento por lotes; aislando de uno en uno...", level="critical")
+                    for item in batch:
+                        if self.should_stop:
+                            break
+                        ok, _, res = self.retry_single_document(item["id"])
+                        with self.lock:
+                            self.processed_files += 1
+                            self.current_file = item["nombre_archivo"]
+                            if ok and res:
+                                estado = res.get("estado")
+                                if estado == "CORRECTO":
+                                    self.correct_files += 1
+                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                    self.discrepancy_files += 1
+                                else:
+                                    self.error_files += 1
+                            else:
+                                self.error_files += 1
+                        idx += 1
+        except Exception as fatal_err:
+            self.add_log(f"ERROR FATAL EN REINTENTO: {fatal_err}\n{traceback.format_exc()}", level="critical")
+        finally:
+            with self.lock:
+                self.status = "COMPLETED" if not self.should_stop else "STOPPED"
+                self.elapsed_seconds = time.time() - self.start_time
+            self.add_log(
+                f"Reintento finalizado. Total: {self.processed_files}/{self.total_files} | "
+                f"Correctos: {self.correct_files} | Discrepancias: {self.discrepancy_files} | Errores: {self.error_files}"
+            )
+
     def _discover_files(self, directory: str, recursive: bool, limit: Optional[int]) -> List[str]:
         pdf_files = []
         if not os.path.exists(directory):

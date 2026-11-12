@@ -234,6 +234,18 @@ class MainWindow(QMainWindow):
         btn_csv.clicked.connect(self._export_csv)
         filter_layout.addWidget(btn_csv)
 
+        self.btn_retry_errors = QPushButton("Reintentar Errores")
+        self.btn_retry_errors.setMinimumHeight(32)
+        self.btn_retry_errors.setCursor(Qt.PointingHandCursor)
+        self.btn_retry_errors.setStyleSheet(
+            "QPushButton { background-color: #d97706; color: white; font-weight: bold; "
+            "border-radius: 5px; padding: 4px 12px; }"
+            "QPushButton:hover { background-color: #b45309; }"
+            "QPushButton:disabled { background-color: #cbd5e1; color: #64748b; }"
+        )
+        self.btn_retry_errors.clicked.connect(self._retry_all_errors)
+        filter_layout.addWidget(self.btn_retry_errors)
+
         btn_refresh = QPushButton("Refrescar")
         btn_refresh.setMinimumHeight(32)
         btn_refresh.clicked.connect(self._refresh_all)
@@ -386,6 +398,7 @@ class MainWindow(QMainWindow):
             if status == "RUNNING":
                 self.was_running = True
                 self.btn_start.setEnabled(False)
+                self.btn_retry_errors.setEnabled(False)
                 self.btn_stop.setEnabled(True)
                 self.progress_bar.setValue(int(prog["progress_pct"]))
                 self.lbl_progress_info.setText(
@@ -403,6 +416,7 @@ class MainWindow(QMainWindow):
                 self.kpi_tasa["value_label"].setText(f"{tasa}%")
             else:
                 self.btn_start.setEnabled(True)
+                self.btn_retry_errors.setEnabled(True)
                 self.btn_stop.setEnabled(False)
                 if self.was_running:
                     self.was_running = False
@@ -538,6 +552,14 @@ class MainWindow(QMainWindow):
                 )
                 btn_ren.clicked.connect(lambda checked, did=doc["id"]: self._rename_single(did))
                 act_layout.addWidget(btn_ren)
+            elif estado in ("ERROR_LECTURA", "NOMBRE_INVALIDO"):
+                btn_ret = QPushButton("Reintentar")
+                btn_ret.setCursor(Qt.PointingHandCursor)
+                btn_ret.setStyleSheet(
+                    "QPushButton { background-color: #d97706; color: white; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
+                )
+                btn_ret.clicked.connect(lambda checked, did=doc["id"]: self._retry_single(did))
+                act_layout.addWidget(btn_ret)
 
             self.table.setCellWidget(row_idx, 10, actions_widget)
 
@@ -632,6 +654,31 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Exportación Exitosa", f"Se exportaron {count} registros a:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error de Exportación", str(e))
+
+    def _retry_all_errors(self):
+        ok, msg = auditor_instance.start_retry_errors()
+        if not ok:
+            QMessageBox.information(self, "Reintento de Errores", msg)
+        else:
+            self.was_running = True
+            self.btn_start.setEnabled(False)
+            self.btn_retry_errors.setEnabled(False)
+            self.btn_stop.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.lbl_progress_info.setText(msg)
+
+    def _retry_single(self, doc_id):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            ok, msg, _ = auditor_instance.retry_single_document(doc_id)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if ok:
+            QMessageBox.information(self, "Reintento Exitoso", msg)
+            self._refresh_all()
+        else:
+            QMessageBox.warning(self, "Error en Reintento", msg)
 
     def _refresh_all(self):
         self._check_db_status()

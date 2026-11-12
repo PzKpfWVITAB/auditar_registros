@@ -159,7 +159,7 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
         rel_y = line["rel_y"]
         if rel_y < 0.24:
             header_lines.append(line)
-        elif rel_y > 0.85:
+        elif rel_y > 0.90:
             footer_lines.append(line)
         else:
             body_lines.append(line)
@@ -232,15 +232,20 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
                     }
                     break
 
-    # c) Fallback con zoom 2x únicamente sobre la sub-zona superior izquierda del recuadro de Registro
+    # c) Fallback con zoom 3x dinámicamente anclado justo encima de "Fecha de Registro:"
     if not reg_encabezado:
         try:
-            x0, y0 = int(img_w * 0.08), int(img_h * 0.11)
-            x1, y1 = int(img_w * 0.52), int(img_h * 0.19)
+            x0, x1 = int(img_w * 0.18), int(img_w * 0.50)
+            if y_fecha_label is not None:
+                y0 = max(int(img_h * 0.10), int(img_h * (y_fecha_label - 0.055)))
+                y1 = int(img_h * y_fecha_label)
+            else:
+                y0, y1 = int(img_h * 0.11), int(img_h * 0.18)
+
             if x1 > x0 + 20 and y1 > y0 + 10:
                 crop = img.crop((x0, y0, x1, y1))
-                crop_2x = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
-                crop_ocr = recognize_image(crop_2x)
+                crop_3x = crop.resize((crop.width * 3, crop.height * 3), Image.Resampling.LANCZOS)
+                crop_ocr = recognize_image(crop_3x)
                 for cl in crop_ocr["lines"]:
                     ct = cl["text"].strip()
                     ct_low = ct.lower()
@@ -258,10 +263,10 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
                         reg_encabezado = val
                         bounding_boxes["encabezado"] = {
                             "text": ct,
-                            "x": x0 + cl["x"] / 2.0,
-                            "y": y0 + cl["y"] / 2.0,
-                            "w": cl["w"] / 2.0,
-                            "h": cl["h"] / 2.0,
+                            "x": x0 + cl["x"] / 3.0,
+                            "y": y0 + cl["y"] / 3.0,
+                            "w": cl["w"] / 3.0,
+                            "h": cl["h"] / 3.0,
                             "color": "#10b981",
                             "label": f"Registro Encabezado: {reg_encabezado}"
                         }
@@ -318,24 +323,32 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
             break
 
     # -------------------------------------------------------------
-    # ZONA 3: Pie de Página
+    # ZONA 3: Pie de Página (rel_y > 0.90, centrado, sin palabras de cuerpo/fecha)
     # -------------------------------------------------------------
     reg_pie = None
+    FORBIDDEN_FOOTER_WORDS = (
+        "pagina", "página", "fecha", "acto", "libro", "registro",
+        "sección", "seccion", "antecedente", "delegado", "jefe", "auxiliar"
+    )
 
     for l in footer_lines:
         t = l["text"].strip()
-        # Ignorar líneas de conteo de página como "Pagina 1 de 2"
-        if re.search(r"p[aá]gina\s+\d+", t, re.IGNORECASE):
+        t_low = t.lower()
+        rel_x = l["x"] / img_w if img_w > 0 else 0
+
+        if any(bad in t_low for bad in FORBIDDEN_FOOTER_WORDS):
+            continue
+        if rel_x < 0.20 or rel_x > 0.78:
             continue
 
-        # Buscar número entero independiente de 3 a 7 dígitos (ej. 14055)
-        m_pie = re.search(r"\b(\d{3,7})\b", t)
+        # Buscar número entero independiente de 2 a 7 dígitos (ej. 14055, 1867, 572)
+        m_pie = re.match(r"^(\d{2,7})$", t) or re.search(r"\b(\d{2,7})\b", t)
         if m_pie:
             reg_pie = m_pie.group(1)
             bounding_boxes["pie"] = {
                 "text": t,
                 "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
-                "color": "#3b82f6", # Azul
+                "color": "#3b82f6",  # Azul
                 "label": f"Registro Pie: {reg_pie}"
             }
             break

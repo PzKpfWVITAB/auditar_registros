@@ -174,37 +174,81 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
     fecha_reg_texto = None
     anio_detectado = None
 
+    SPANISH_MONTHS = (
+        "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "setiembre", "octubre", "noviembre", "diciembre"
+    )
     FORBIDDEN_HEADER_WORDS = (
-        "volante", "recibo", "derecho", "hora", "calificador",
+        "fecha", "volante", "recibo", "derecho", "hora", "calificador",
         "folio", "libro", "sección", "seccion", "notaria",
-        "escritura", "volumen", "tomo", "pagina", "página"
+        "escritura", "volumen", "tomo", "pagina", "página",
+        "publico", "oficina", "chiapas", "tuxtla", "estado", "inscrito",
+        *SPANISH_MONTHS,
+    )
+    DATE_LIKE_RE = re.compile(
+        r"\b\d{1,2}\s+(?:DE\s+)?[A-ZÁÉÍÓÚ]{3,}\s+(?:DEL?\s+)?(?:19\d{2}|20\d{2})\b",
+        re.IGNORECASE,
     )
 
-    # Ubicar referencias Y de "Registro:" y "Fecha de Registro:" en la mitad izquierda
+    def _left_col_text(line_obj, max_rel_x: float = 0.52) -> str:
+        """Extrae solo las palabras de la columna izquierda del recuadro superior."""
+        words = line_obj.get("words") or []
+        if words and img_w > 0:
+            left_words = [w["text"] for w in words if (w["x"] / img_w) < max_rel_x]
+            return " ".join(left_words).strip()
+        if img_w > 0 and (line_obj["x"] / img_w) < max_rel_x:
+            return line_obj["text"].strip()
+        return ""
+
+    # Ubicar referencias Y clave dentro del recuadro:
+    # - y_top_box: línea "Esta Oficina hace constar que este documento quedo inscrito bajo :"
+    # - y_reg_label: línea "Registro:"
+    # - y_fecha_label: línea "Fecha de Registro: DD DE MES DEL YYYY"
+    y_top_box = None
     y_reg_label = None
     y_fecha_label = None
     for l in header_lines:
+        left_t = _left_col_text(l, max_rel_x=0.60)
         t_low = l["text"].lower()
+        left_low = left_t.lower()
         rel_x = l["x"] / img_w if img_w > 0 else 0
-        if rel_x < 0.55 and l["rel_y"] > 0.10:
-            if "fecha" in t_low and "registro" in t_low:
-                y_fecha_label = l["rel_y"]
-            elif "registro" in t_low and "publico" not in t_low and "oficina" not in t_low:
-                y_reg_label = l["rel_y"]
 
-    # a) Búsqueda directa de "Registro: X" en líneas válidas (sin palabras prohibidas)
+        if "inscrito" in t_low or "hace constar" in t_low or "documento quedo" in t_low:
+            if 0.08 < l["rel_y"] < 0.18:
+                y_top_box = l["rel_y"]
+
+        if rel_x < 0.55 and l["rel_y"] > 0.11:
+            has_year_and_text = bool(re.search(r"\b(?:19\d{2}|20\d{2})\b", left_t) and re.search(r"[A-Za-z]{3,}", left_t))
+            if "fecha" in left_low or DATE_LIKE_RE.search(left_t) or (0.13 < l["rel_y"] < 0.22 and has_year_and_text):
+                if y_fecha_label is None or l["rel_y"] < y_fecha_label:
+                    y_fecha_label = l["rel_y"]
+            elif "registro" in left_low and "publico" not in left_low and "oficina" not in left_low:
+                if y_reg_label is None:
+                    y_reg_label = l["rel_y"]
+
+    y_min_reg = max(0.11, (y_top_box + 0.003) if y_top_box is not None else 0.11)
+    if y_fecha_label is not None:
+        y_max_reg = max(y_min_reg + 0.01, y_fecha_label - 0.002)
+    elif y_reg_label is not None:
+        y_max_reg = max(y_min_reg + 0.01, y_reg_label + 0.015)
+    else:
+        y_max_reg = 0.185
+
+    # a) Búsqueda directa de "Registro: X" en la columna izquierda (NUNCA en líneas de Fecha/Volante/etc.)
     for l in header_lines:
-        t = l["text"].strip()
-        t_low = t.lower()
-        if any(bad in t_low for bad in FORBIDDEN_HEADER_WORDS):
+        left_t = _left_col_text(l, max_rel_x=0.52)
+        if not left_t:
+            continue
+        left_low = left_t.lower()
+        if any(bad in left_low for bad in FORBIDDEN_HEADER_WORDS) or DATE_LIKE_RE.search(left_t):
             continue
 
-        m_reg = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", t, re.IGNORECASE)
-        if m_reg and l["rel_y"] > 0.10:
+        m_reg = re.search(r"\bRegistro\s*[:.]?\s*(\d{1,7})\b", left_t, re.IGNORECASE)
+        if m_reg and y_min_reg <= l["rel_y"] <= y_max_reg + 0.02:
             reg_encabezado = m_reg.group(1)
             reg_encabezado_labeled = True
             bounding_boxes["encabezado"] = {
-                "text": t,
+                "text": left_t,
                 "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
                 "color": "#10b981",  # Verde
                 "label": f"Registro Encabezado: {reg_encabezado}"
@@ -212,65 +256,101 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
             break
 
     # b) Si "Registro:" estaba en una línea y el número quedó desfasado arriba/al lado
-    #    Solo aceptar números en la mitad izquierda (rel_x < 0.50) y POR ENCIMA de Fecha de Registro
+    #    Aceptar números en columna izquierda (0.14 <= rel_x < 0.50) estrictamente por ENCIMA de Fecha de Registro
     if not reg_encabezado:
-        max_allowed_y = y_fecha_label if y_fecha_label is not None else 0.19
         for l in header_lines:
-            t = l["text"].strip()
-            t_low = t.lower()
-            rel_x = l["x"] / img_w if img_w > 0 else 0
-            if any(bad in t_low for bad in FORBIDDEN_HEADER_WORDS):
+            if not (y_min_reg <= l["rel_y"] < y_max_reg):
                 continue
-            if rel_x < 0.50 and 0.10 < l["rel_y"] < max_allowed_y:
-                if re.match(r"^\d{2,7}$", t):
-                    reg_encabezado = t
-                    bounding_boxes["encabezado"] = {
-                        "text": t,
-                        "x": l["x"], "y": l["y"], "w": l["w"], "h": l["h"],
-                        "color": "#10b981",
-                        "label": f"Registro Encabezado: {reg_encabezado}"
-                    }
-                    break
+            left_t = _left_col_text(l, max_rel_x=0.50)
+            if not left_t:
+                continue
+            left_low = left_t.lower()
+            if any(bad in left_low for bad in FORBIDDEN_HEADER_WORDS) or DATE_LIKE_RE.search(left_t):
+                continue
 
-    # c) Fallback con zoom 3x dinámicamente anclado justo encima de "Fecha de Registro:"
+            # Buscar número entero limpio de 1 a 7 dígitos en los tokens de la columna izquierda
+            left_words = [
+                w for w in (l.get("words") or [])
+                if img_w > 0 and 0.14 <= (w["x"] / img_w) < 0.50
+            ]
+            clean_num = None
+            target_box = l
+            if re.match(r"^\d{1,7}$", left_t):
+                clean_num = left_t
+            else:
+                for w in left_words:
+                    wt = w["text"].strip(".:,;-# ")
+                    if re.match(r"^\d{2,7}$", wt):
+                        clean_num = wt
+                        target_box = w
+                        break
+                if not clean_num:
+                    for w in left_words:
+                        wt = w["text"].strip(".:,;-# ")
+                        if re.match(r"^\d{1,7}$", wt):
+                            clean_num = wt
+                            target_box = w
+                            break
+
+            if clean_num:
+                reg_encabezado = clean_num
+                bounding_boxes["encabezado"] = {
+                    "text": clean_num,
+                    "x": target_box["x"], "y": target_box["y"],
+                    "w": target_box["w"], "h": target_box["h"],
+                    "color": "#10b981",
+                    "label": f"Registro Encabezado: {reg_encabezado}"
+                }
+                break
+
+    # c) Fallback con zoom 3x (margen blanco + autocontraste/nitidez) entre tope del recuadro y "Fecha de Registro:"
     if not reg_encabezado:
         try:
-            x0, x1 = int(img_w * 0.18), int(img_w * 0.50)
-            if y_fecha_label is not None:
-                y0 = max(int(img_h * 0.10), int(img_h * (y_fecha_label - 0.055)))
-                y1 = int(img_h * y_fecha_label)
-            else:
-                y0, y1 = int(img_h * 0.11), int(img_h * 0.18)
+            from PIL import ImageOps, ImageFilter
+            x0, x1 = int(img_w * 0.14), int(img_w * 0.51)
+            crop_y1_rel = y_max_reg
+            crop_y0_rel = max(y_min_reg, crop_y1_rel - 0.055)
+            y0 = int(img_h * crop_y0_rel)
+            y1 = int(img_h * crop_y1_rel)
 
             if x1 > x0 + 20 and y1 > y0 + 10:
                 crop = img.crop((x0, y0, x1, y1))
                 crop_3x = crop.resize((crop.width * 3, crop.height * 3), Image.Resampling.LANCZOS)
-                crop_ocr = recognize_image(crop_3x)
-                for cl in crop_ocr["lines"]:
-                    ct = cl["text"].strip()
-                    ct_low = ct.lower()
-                    if any(bad in ct_low for bad in FORBIDDEN_HEADER_WORDS) or "fecha" in ct_low:
-                        continue
-                    m_c = re.search(r"Registro\s*[:.]?\s*(\d{1,7})\b", ct, re.IGNORECASE)
-                    if m_c:
-                        val = m_c.group(1)
-                        reg_encabezado_labeled = True
-                    elif re.match(r"^\d{2,7}$", ct):
-                        val = ct
-                    else:
-                        val = None
-                    if val:
-                        reg_encabezado = val
-                        bounding_boxes["encabezado"] = {
-                            "text": ct,
-                            "x": x0 + cl["x"] / 3.0,
-                            "y": y0 + cl["y"] / 3.0,
-                            "w": cl["w"] / 3.0,
-                            "h": cl["h"] / 3.0,
-                            "color": "#10b981",
-                            "label": f"Registro Encabezado: {reg_encabezado}"
-                        }
+                pad = 40
+                padded_rgb = ImageOps.expand(crop_3x.convert("RGB"), border=pad, fill="white")
+                padded_sharp = ImageOps.autocontrast(
+                    padded_rgb.convert("L").filter(ImageFilter.SHARPEN),
+                    cutoff=2,
+                )
+                for crop_img in (padded_rgb, padded_sharp):
+                    if reg_encabezado:
                         break
+                    crop_ocr = recognize_image(crop_img)
+                    for cl in crop_ocr["lines"]:
+                        ct = cl["text"].strip()
+                        ct_low = ct.lower()
+                        if any(bad in ct_low for bad in FORBIDDEN_HEADER_WORDS) or DATE_LIKE_RE.search(ct):
+                            continue
+                        m_c = re.search(r"\bRegistro\s*[:.]?\s*(\d{1,7})\b", ct, re.IGNORECASE)
+                        if m_c:
+                            val = m_c.group(1)
+                            reg_encabezado_labeled = True
+                        elif re.match(r"^\d{1,7}$", ct.strip(".:,;-# ")):
+                            val = ct.strip(".:,;-# ")
+                        else:
+                            val = None
+                        if val:
+                            reg_encabezado = val
+                            bounding_boxes["encabezado"] = {
+                                "text": ct,
+                                "x": max(0.0, x0 + (cl["x"] - pad) / 3.0),
+                                "y": max(0.0, y0 + (cl["y"] - pad) / 3.0),
+                                "w": cl["w"] / 3.0,
+                                "h": cl["h"] / 3.0,
+                                "color": "#10b981",
+                                "label": f"Registro Encabezado: {reg_encabezado}"
+                            }
+                            break
         except Exception:
             pass
 

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS `documentos_auditados` (
     
     -- Control operativo
     `tiempo_proceso_ms` INT DEFAULT 0,
+    `colision_bd` TINYINT(1) DEFAULT 0,
     `estado_renombrado` ENUM('PENDIENTE', 'RENOMBRADO', 'OMITIDO') DEFAULT 'PENDIENTE',
     `fecha_auditoria` DATETIME DEFAULT CURRENT_TIMESTAMP,
     
@@ -58,8 +59,17 @@ CREATE TABLE IF NOT EXISTS `documentos_auditados` (
     INDEX `idx_nombre_archivo` (`nombre_archivo`),
     INDEX `idx_registro_actual` (`registro_actual`),
     INDEX `idx_registro_final` (`registro_final_detectado`),
+    INDEX `idx_colision_bd` (`colision_bd`),
     INDEX `idx_lote_id` (`lote_id`),
     INDEX `idx_fecha_auditoria` (`fecha_auditoria`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tabla catálogo de PDFs existentes en la BD para detectar choques de nombre propuesto
+CREATE TABLE IF NOT EXISTS `registros_existentes` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `nombre_pdf` VARCHAR(255) NOT NULL,
+    `fecha_carga` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uk_nombre_pdf` (`nombre_pdf`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Tabla de historial de renombrado seguro (permite rollback si se activa)

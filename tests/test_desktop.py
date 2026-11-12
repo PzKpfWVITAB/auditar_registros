@@ -24,29 +24,34 @@ def run_desktop_tests():
     # 1. MainWindow
     print("[1/4] Instanciando MainWindow...")
     win = MainWindow()
-    assert win.table.columnCount() == 11
-    print(f" -> KPI Total en UI: {win.kpi_total['value_label'].text()}")
+    assert win.table.columnCount() == 12
+    assert "COLISION_BD" in win.filter_buttons
+    print(f" -> KPI Total en UI: {win.kpi_total['value_label'].text()} | Colisiones: {win.kpi_colisiones['value_label'].text()}")
     print(f" -> Filas cargadas en tabla: {win.table.rowCount()}")
 
     # 2. Filtros
     print("[2/4] Probando filtros de tabla...")
     win._set_filter("DISCREPANCIAS")
     print(f" -> Filas en DISCREPANCIAS: {win.table.rowCount()}")
+    win._set_filter("COLISION_BD")
+    print(f" -> Filas en COLISION_BD: {win.table.rowCount()}")
     win._set_filter("TODOS")
 
     # 3. DbToolsDialog
     print("[3/4] Instanciando DbToolsDialog...")
     db_dlg = DbToolsDialog(parent=win)
     assert "Conectado" in db_dlg.status_label.text()
-    print(f" -> Estado mostrado: {db_dlg.status_label.text()}")
+    assert "registros_existentes" in db_dlg.catalog_label.text()
+    print(f" -> Estado mostrado: {db_dlg.status_label.text()} | {db_dlg.catalog_label.text()}")
     db_dlg.close()
 
-    # 4. PreviewDialog (si existe al menos 1 documento en BD)
+    # 4. PreviewDialog (sin botón de renombrar)
     print("[4/4] Probando PreviewDialog y Exportación...")
     res = db_manager.get_audit_results(page=1, page_size=1)
     if res["items"]:
         doc_id = res["items"][0]["id"]
         prev_dlg = PreviewDialog(doc_id, parent=win)
+        assert not hasattr(prev_dlg, "btn_rename"), "El botón Renombrar debe haberse eliminado."
         print(f" -> Preview abierto para ID={doc_id}: {prev_dlg.lbl_file_title.text()}")
         prev_dlg.close()
 

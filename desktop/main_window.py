@@ -178,10 +178,14 @@ class MainWindow(QMainWindow):
         self.kpi_total = self._make_kpi_card("Total Auditados", "0", "#1e293b", "#f1f5f9")
         self.kpi_correctos = self._make_kpi_card("Correctos", "0", "#166534", "#dcfce7")
         self.kpi_discrepancias = self._make_kpi_card("Con Discrepancias", "0", "#b45309", "#fef3c7")
-        self.kpi_errores = self._make_kpi_card("Errores Lectura", "0", "#991b1b", "#fee2e2")
+        self.kpi_colisiones = self._make_kpi_card("Chocan en BD", "0", "#991b1b", "#fee2e2")
+        self.kpi_errores = self._make_kpi_card("Errores Lectura", "0", "#7f1d1d", "#fecaca")
         self.kpi_tasa = self._make_kpi_card("Tasa Discrepancia", "0.0%", "#3730a3", "#e0e7ff")
 
-        for card in (self.kpi_total, self.kpi_correctos, self.kpi_discrepancias, self.kpi_errores, self.kpi_tasa):
+        for card in (
+            self.kpi_total, self.kpi_correctos, self.kpi_discrepancias,
+            self.kpi_colisiones, self.kpi_errores, self.kpi_tasa
+        ):
             kpi_layout.addWidget(card["frame"], 1)
 
         root_layout.addLayout(kpi_layout)
@@ -196,6 +200,7 @@ class MainWindow(QMainWindow):
         for key, label in [
             ("TODOS", "Todos"),
             ("DISCREPANCIAS", "Solo Discrepancias"),
+            ("COLISION_BD", "Chocan en BD"),
             ("CORRECTO", "Correctos"),
             ("ERROR_LECTURA", "Errores")
         ]:
@@ -257,11 +262,11 @@ class MainWindow(QMainWindow):
         # 5. TABLA DE RESULTADOS
         # ------------------------------------------------------------------
         self.table = QTableWidget()
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
             "Estado", "Archivo Actual", "Reg. Actual", "Reg. Encabezado",
             "Reg. Pie", "Doble Marca", "Antecedente (Trampa)",
-            "Nombre Propuesto", "Confianza", "Diagnóstico / Motivo", "Acciones"
+            "Nombre Propuesto", "Choca en BD", "Confianza", "Diagnóstico / Motivo", "Acciones"
         ])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -271,17 +276,18 @@ class MainWindow(QMainWindow):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionResizeMode(9, QHeaderView.Stretch)
+        header.setSectionResizeMode(10, QHeaderView.Stretch)
         self.table.setColumnWidth(0, 145)
-        self.table.setColumnWidth(1, 165)
-        self.table.setColumnWidth(2, 85)
-        self.table.setColumnWidth(3, 110)
-        self.table.setColumnWidth(4, 80)
-        self.table.setColumnWidth(5, 85)
-        self.table.setColumnWidth(6, 130)
-        self.table.setColumnWidth(7, 165)
-        self.table.setColumnWidth(8, 75)
-        self.table.setColumnWidth(10, 150)
+        self.table.setColumnWidth(1, 160)
+        self.table.setColumnWidth(2, 80)
+        self.table.setColumnWidth(3, 105)
+        self.table.setColumnWidth(4, 75)
+        self.table.setColumnWidth(5, 80)
+        self.table.setColumnWidth(6, 125)
+        self.table.setColumnWidth(7, 160)
+        self.table.setColumnWidth(8, 95)
+        self.table.setColumnWidth(9, 75)
+        self.table.setColumnWidth(11, 130)
 
         root_layout.addWidget(self.table, 1)
 
@@ -434,6 +440,7 @@ class MainWindow(QMainWindow):
             self.kpi_total["value_label"].setText(f"{int(s.get('total') or 0):,}")
             self.kpi_correctos["value_label"].setText(f"{int(s.get('correctos') or 0):,}")
             self.kpi_discrepancias["value_label"].setText(f"{int(s.get('discrepancias') or 0):,}")
+            self.kpi_colisiones["value_label"].setText(f"{int(s.get('colisiones') or 0):,}")
             self.kpi_errores["value_label"].setText(f"{int(s.get('errores') or 0):,}")
             self.kpi_tasa["value_label"].setText(f"{float(s.get('tasa_discrepancia_pct') or 0.0)}%")
         except Exception:
@@ -521,16 +528,25 @@ class MainWindow(QMainWindow):
                 it_prop.setFont(bold_font)
             self.table.setItem(row_idx, 7, it_prop)
 
+            choca = bool(doc.get("colision_bd"))
+            it_col = QTableWidgetItem("SÍ (CHOCA)" if choca else ("NO" if doc.get("nombre_propuesto") else "-"))
+            it_col.setTextAlignment(Qt.AlignCenter)
+            if choca:
+                it_col.setForeground(QColor("#991b1b"))
+                it_col.setBackground(QColor("#fee2e2"))
+                it_col.setFont(bold_font)
+            self.table.setItem(row_idx, 8, it_col)
+
             it_conf = QTableWidgetItem(f"{doc.get('confianza_score', 0)}%")
             it_conf.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 8, it_conf)
+            self.table.setItem(row_idx, 9, it_conf)
 
             motivo = doc.get("motivo_discrepancia") or "-"
             it_mot = QTableWidgetItem(motivo)
             it_mot.setToolTip(motivo)
-            self.table.setItem(row_idx, 9, it_mot)
+            self.table.setItem(row_idx, 10, it_mot)
 
-            # Botones de acción en celda
+            # Botones de acción en celda (solo auditoría: Ver y Reintentar errores)
             actions_widget = QWidget()
             act_layout = QHBoxLayout(actions_widget)
             act_layout.setContentsMargins(4, 2, 4, 2)
@@ -544,15 +560,7 @@ class MainWindow(QMainWindow):
             btn_view.clicked.connect(lambda checked, did=doc["id"]: self._open_preview(did))
             act_layout.addWidget(btn_view)
 
-            if "DISCREPANCIA" in estado and doc.get("estado_renombrado") == "PENDIENTE":
-                btn_ren = QPushButton("Renombrar")
-                btn_ren.setCursor(Qt.PointingHandCursor)
-                btn_ren.setStyleSheet(
-                    "QPushButton { background-color: #059669; color: white; border-radius: 4px; padding: 2px 8px; font-size: 11px; }"
-                )
-                btn_ren.clicked.connect(lambda checked, did=doc["id"]: self._rename_single(did))
-                act_layout.addWidget(btn_ren)
-            elif estado in ("ERROR_LECTURA", "NOMBRE_INVALIDO"):
+            if estado in ("ERROR_LECTURA", "NOMBRE_INVALIDO"):
                 btn_ret = QPushButton("Reintentar")
                 btn_ret.setCursor(Qt.PointingHandCursor)
                 btn_ret.setStyleSheet(
@@ -561,7 +569,7 @@ class MainWindow(QMainWindow):
                 btn_ret.clicked.connect(lambda checked, did=doc["id"]: self._retry_single(did))
                 act_layout.addWidget(btn_ret)
 
-            self.table.setCellWidget(row_idx, 10, actions_widget)
+            self.table.setCellWidget(row_idx, 11, actions_widget)
 
     def _set_filter(self, key):
         self.current_filter = key
@@ -604,28 +612,8 @@ class MainWindow(QMainWindow):
                 self._open_preview(doc_id)
 
     def _open_preview(self, doc_id):
-        dlg = PreviewDialog(doc_id, parent=self, on_renamed=self._refresh_all)
+        dlg = PreviewDialog(doc_id, parent=self)
         dlg.exec()
-
-    def _rename_single(self, doc_id):
-        doc = db_manager.get_document_by_id(doc_id)
-        if not doc:
-            return
-        confirm = QMessageBox.question(
-            self,
-            "Confirmar Renombrado",
-            f"¿Deseas renombrar el archivo físico:\n\n{doc['nombre_archivo']}\n  ➜  {doc['nombre_propuesto']}?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if confirm != QMessageBox.Yes:
-            return
-        ok, msg = db_manager.execute_safe_rename(doc_id)
-        if ok:
-            QMessageBox.information(self, "Renombrado Exitoso", msg)
-            self._refresh_all()
-        else:
-            QMessageBox.critical(self, "Error", msg)
 
     def _open_db_dialog(self):
         dlg = DbToolsDialog(parent=self, on_db_changed=self._refresh_all)

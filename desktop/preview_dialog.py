@@ -127,17 +127,6 @@ class PreviewDialog(QDialog):
         self.btn_copy.clicked.connect(self._copy_proposed)
         right_layout.addWidget(self.btn_copy)
 
-        self.btn_rename = QPushButton("Aplicar Renombrado Seguro")
-        self.btn_rename.setMinimumHeight(38)
-        self.btn_rename.setCursor(Qt.PointingHandCursor)
-        self.btn_rename.setStyleSheet(
-            "QPushButton { background-color: #059669; color: white; font-weight: bold; border-radius: 6px; border: none; }"
-            "QPushButton:hover { background-color: #047857; }"
-            "QPushButton:disabled { background-color: #94a3b8; }"
-        )
-        self.btn_rename.clicked.connect(self._apply_rename)
-        right_layout.addWidget(self.btn_rename)
-
         btn_close = QPushButton("Cerrar")
         btn_close.setMinimumHeight(34)
         btn_close.clicked.connect(self.accept)
@@ -157,7 +146,7 @@ class PreviewDialog(QDialog):
     def _load_document_data(self):
         if not self.doc:
             self.image_label.setText("Documento no encontrado en base de datos.")
-            self.btn_rename.setEnabled(False)
+            self.btn_copy.setEnabled(False)
             return
 
         self.lbl_file_title.setText(f"Archivo: {self.doc['nombre_archivo']}")
@@ -167,19 +156,19 @@ class PreviewDialog(QDialog):
         self.lbl_motivo.setText(self.doc.get("motivo_discrepancia") or "Sin observaciones.")
 
         propuesto = self.doc.get("nombre_propuesto") or "N/A"
+        choca_html = (
+            "<span style='color:#b91c1c; font-weight:bold;'>SÍ (Ya existe en registros_existentes)</span>"
+            if self.doc.get("colision_bd")
+            else "<span style='color:#166534;'>NO</span>"
+        )
         self.lbl_comparativa.setText(
             f"<b>Nombre Actual:</b> {self.doc['nombre_archivo']}<br>"
             f"<b>Nombre Propuesto:</b> <span style='color:#059669;'>{propuesto}</span><br>"
+            f"<b>Choca en BD:</b> {choca_html}<br>"
             f"<b>Año Detectado:</b> {self.doc.get('anio_detectado') or '-'}<br>"
             f"<b>Confianza OCR:</b> {self.doc.get('confianza_score', 0)}%"
         )
 
-        can_rename = (
-            "DISCREPANCIA" in (self.doc.get("estado") or "")
-            and self.doc.get("estado_renombrado") == "PENDIENTE"
-            and bool(self.doc.get("nombre_propuesto"))
-        )
-        self.btn_rename.setEnabled(can_rename)
         self.btn_copy.setEnabled(bool(self.doc.get("nombre_propuesto")))
 
         self._render_preview_image()
@@ -237,23 +226,3 @@ class PreviewDialog(QDialog):
         if prop:
             QApplication.clipboard().setText(prop)
             QMessageBox.information(self, "Copiado", f"Nombre copiado al portapapeles:\n{prop}")
-
-    def _apply_rename(self):
-        confirm = QMessageBox.question(
-            self,
-            "Confirmar Renombrado",
-            f"¿Deseas renombrar el archivo físico:\n\n{self.doc['nombre_archivo']}\n  ➜  {self.doc['nombre_propuesto']}?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        if confirm != QMessageBox.Yes:
-            return
-
-        ok, msg = db_manager.execute_safe_rename(self.doc_id)
-        if ok:
-            QMessageBox.information(self, "Renombrado Exitoso", msg)
-            if self.on_renamed:
-                self.on_renamed()
-            self.accept()
-        else:
-            QMessageBox.critical(self, "Error al Renombrar", msg)

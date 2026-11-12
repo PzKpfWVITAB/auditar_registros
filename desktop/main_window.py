@@ -379,38 +379,49 @@ class MainWindow(QMainWindow):
         auditor_instance.stop()
 
     def _poll_progress(self):
-        prog = auditor_instance.get_progress()
-        status = prog["status"]
+        try:
+            prog = auditor_instance.get_progress()
+            status = prog["status"]
 
-        if status == "RUNNING":
-            self.was_running = True
-            self.btn_start.setEnabled(False)
-            self.btn_stop.setEnabled(True)
-            self.progress_bar.setValue(int(prog["progress_pct"]))
-            self.lbl_progress_info.setText(
-                f"{prog['processed_files']}/{prog['total_files']} | "
-                f"{prog['rate_docs_per_sec']} docs/s | {prog['current_file']}"
-            )
-            self._load_summary()
-        else:
-            self.btn_start.setEnabled(True)
-            self.btn_stop.setEnabled(False)
-            if self.was_running:
-                self.was_running = False
-                self.progress_bar.setValue(100 if status == "COMPLETED" else int(prog["progress_pct"]))
+            if status == "RUNNING":
+                self.was_running = True
+                self.btn_start.setEnabled(False)
+                self.btn_stop.setEnabled(True)
+                self.progress_bar.setValue(int(prog["progress_pct"]))
                 self.lbl_progress_info.setText(
-                    f"Finalizado ({prog['processed_files']}/{prog['total_files']}) en {prog['elapsed_seconds']}s"
+                    f"{prog['processed_files']}/{prog['total_files']} | "
+                    f"{prog['rate_docs_per_sec']} docs/s | {prog['current_file']}"
                 )
-                self._refresh_all()
+                # Actualizar KPIs en memoria sin saturar MySQL durante el escaneo
+                proc = int(prog["processed_files"])
+                disc = int(prog["discrepancy_files"])
+                tasa = round((disc / proc * 100), 2) if proc > 0 else 0.0
+                self.kpi_total["value_label"].setText(f"{proc:,}")
+                self.kpi_correctos["value_label"].setText(f"{int(prog['correct_files']):,}")
+                self.kpi_discrepancias["value_label"].setText(f"{disc:,}")
+                self.kpi_errores["value_label"].setText(f"{int(prog['error_files']):,}")
+                self.kpi_tasa["value_label"].setText(f"{tasa}%")
+            else:
+                self.btn_start.setEnabled(True)
+                self.btn_stop.setEnabled(False)
+                if self.was_running:
+                    self.was_running = False
+                    self.progress_bar.setValue(100 if status == "COMPLETED" else int(prog["progress_pct"]))
+                    self.lbl_progress_info.setText(
+                        f"Finalizado ({prog['processed_files']}/{prog['total_files']}) en {prog['elapsed_seconds']}s"
+                    )
+                    self._refresh_all()
+        except Exception:
+            pass
 
     def _load_summary(self):
         try:
             s = db_manager.get_audit_summary()
-            self.kpi_total["value_label"].setText(f"{s['total']:,}")
-            self.kpi_correctos["value_label"].setText(f"{s['correctos']:,}")
-            self.kpi_discrepancias["value_label"].setText(f"{s['discrepancias']:,}")
-            self.kpi_errores["value_label"].setText(f"{s['errores']:,}")
-            self.kpi_tasa["value_label"].setText(f"{s['tasa_discrepancia_pct']}%")
+            self.kpi_total["value_label"].setText(f"{int(s.get('total') or 0):,}")
+            self.kpi_correctos["value_label"].setText(f"{int(s.get('correctos') or 0):,}")
+            self.kpi_discrepancias["value_label"].setText(f"{int(s.get('discrepancias') or 0):,}")
+            self.kpi_errores["value_label"].setText(f"{int(s.get('errores') or 0):,}")
+            self.kpi_tasa["value_label"].setText(f"{float(s.get('tasa_discrepancia_pct') or 0.0)}%")
         except Exception:
             pass
 

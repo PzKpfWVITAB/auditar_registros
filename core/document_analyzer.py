@@ -1,10 +1,14 @@
 import os
 import re
 import time
+import threading
 import pymupdf  # PyMuPDF
 from PIL import Image
 from config import settings
 from core.ocr_engine import recognize_image
+
+# PyMuPDF (fitz) no es thread-safe a nivel C; este lock protege apertura y renderizado
+_pdf_lock = threading.Lock()
 
 MONTHS = {
     "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4,
@@ -46,36 +50,48 @@ def extract_page_image(pdf_path: str, page_number: int = 0, dpi: int = None) -> 
         dpi = settings.OCR_DPI
     # Si la ruta es directamente una imagen (para pruebas o formatos mixtos)
     if pdf_path.lower().endswith((".jpg", ".jpeg", ".png")):
-        return Image.open(pdf_path)
+        img = Image.open(pdf_path)
+        img.load()
+    else:
+        with _pdf_lock:
+            doc = pymupdf.open(pdf_path)
+            try:
+                if len(doc) <= page_number:
+                    raise ValueError(
+                        f"El PDF solo contiene {len(doc)} páginas. No se puede acceder a la {page_number}."
+                    )
 
-    doc = pymupdf.open(pdf_path)
-    if len(doc) <= page_number:
-        doc.close()
-        raise ValueError(f"El PDF solo contiene {len(doc)} páginas. No se puede acceder a la {page_number}.")
-    
-    page = doc[page_number]
-    
-    # Intentar extraer la imagen escaneada original nativa
-    image_list = page.get_images(full=True)
-    if image_list:
-        try:
-            xref = image_list[0][0]
-            base_image = doc.extract_image(xref)
-            image_bytes = base_image["image"]
-            img = Image.open(io.BytesIO(image_bytes))
-            # Si la imagen tiene un tamaño razonable para una página (ej. > 400x400)
-            if img.width > 400 and img.height > 400:
+                page = doc[page_number]
+                img = None
+
+                # Intentar extraer la imagen escaneada original nativa
+                image_list = page.get_images(full=True)
+                if image_list:
+                    try:
+                        xref = image_list[0][0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+                        candidate = Image.open(io.BytesIO(image_bytes))
+                        candidate.load()
+                        if candidate.width > 400 and candidate.height > 400:
+                            img = candidate
+                    except Exception:
+                        img = None
+
+                # Si no hay imagen embebida o falló, renderizar a DPI configurado
+                if img is None:
+                    zoom = dpi / 72.0
+                    mat = pymupdf.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            finally:
                 doc.close()
-                return img
-        except Exception:
-            pass
 
-    # Si no hay imagen embebida o falló, renderizar a 150 DPI
-    zoom = dpi / 72.0
-    mat = pymupdf.Matrix(zoom, zoom)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    doc.close()
+    # Evitar imágenes gigantescas que puedan saturar memoria en WinOCR
+    max_dim = 2400
+    if img.width > max_dim or img.height > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
     return img
 
 def analyze_document(file_path: str, lote_id: int = None) -> dict:

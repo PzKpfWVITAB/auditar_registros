@@ -1,6 +1,10 @@
+import threading
 import winocr
 from PIL import Image
 from config import settings
+
+# WinRT Media.Ocr es más estable al serializar llamadas COM desde múltiples hilos
+_ocr_lock = threading.Lock()
 
 def recognize_image(image: Image.Image, lang: str = None) -> dict:
     """
@@ -16,8 +20,9 @@ def recognize_image(image: Image.Image, lang: str = None) -> dict:
 
     width, height = image.size
     
-    # Ejecutar reconocimiento síncrono
-    raw_result = winocr.recognize_pil_sync(image, lang=lang)
+    # Ejecutar reconocimiento síncrono protegido contra condiciones de carrera COM
+    with _ocr_lock:
+        raw_result = winocr.recognize_pil_sync(image, lang=lang)
     
     lines_output = []
     

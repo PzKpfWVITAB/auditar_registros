@@ -92,10 +92,12 @@ class PreviewDialog(QDialog):
 
         self.lbl_header_box = self._make_legend_box("#dcfce7", "#166534", "#22c55e", "Verde - Encabezado: --")
         self.lbl_footer_box = self._make_legend_box("#dbeafe", "#1e40af", "#3b82f6", "Azul - Pie de Página: --")
+        self.lbl_del_box = self._make_legend_box("#f3e8ff", "#6b21a8", "#9333ea", "Morado - Delegación: --")
         self.lbl_ant_box = self._make_legend_box("#fee2e2", "#991b1b", "#ef4444", "Rojo - Antecedente (Trampa): --")
 
         right_layout.addWidget(self.lbl_header_box)
         right_layout.addWidget(self.lbl_footer_box)
+        right_layout.addWidget(self.lbl_del_box)
         right_layout.addWidget(self.lbl_ant_box)
 
         lbl_sec2 = QLabel("DIAGNÓSTICO DEL AUDITOR")
@@ -152,6 +154,12 @@ class PreviewDialog(QDialog):
         self.lbl_file_title.setText(f"Archivo: {self.doc['nombre_archivo']}")
         self.lbl_header_box.setText(f"Verde - Encabezado: {self.doc.get('registro_encabezado') or 'No detectado'}")
         self.lbl_footer_box.setText(f"Azul - Pie de Página: {self.doc.get('registro_pie') or 'No detectado'}")
+        
+        del_det = self.doc.get("municipio_detectado")
+        del_clave = self.doc.get("delegacion_detectada_clave")
+        del_text = f"{del_clave} - {del_det}" if del_det else "No detectada"
+        self.lbl_del_box.setText(f"Morado - Delegación: {del_text}")
+        
         self.lbl_ant_box.setText(f"Rojo - Antecedente (Trampa): {self.doc.get('registro_antecedente') or 'Ninguno'}")
         self.lbl_motivo.setText(self.doc.get("motivo_discrepancia") or "Sin observaciones.")
 
@@ -161,12 +169,23 @@ class PreviewDialog(QDialog):
             if self.doc.get("colision_bd")
             else "<span style='color:#166534;'>NO</span>"
         )
+        
+        del_coin = self.doc.get("delegacion_coincide")
+        del_coin_html = (
+            "<span style='color:#166534; font-weight:bold;'>SÍ</span>" if del_coin == 1
+            else ("<span style='color:#b91c1c; font-weight:bold;'>NO (Discrepancia)</span>" if del_coin == 0
+            else "<span style='color:#64748b;'>No detectada</span>")
+        )
+
         self.lbl_comparativa.setText(
             f"<b>Nombre Actual:</b> {self.doc['nombre_archivo']}<br>"
+            f"<b>Delegación Archivo:</b> {self.doc.get('delegacion_archivo_nombre') or self.doc.get('delegacion_actual') or '-'}<br>"
+            f"<b>Municipio Detectado:</b> {del_det or '-'}<br>"
+            f"<b>Del. Coincide:</b> {del_coin_html} ({self.doc.get('confianza_delegacion', 0)}%)<br>"
             f"<b>Nombre Propuesto:</b> <span style='color:#059669;'>{propuesto}</span><br>"
             f"<b>Choca en BD:</b> {choca_html}<br>"
             f"<b>Año Detectado:</b> {self.doc.get('anio_detectado') or '-'}<br>"
-            f"<b>Confianza OCR:</b> {self.doc.get('confianza_score', 0)}%"
+            f"<b>Confianza OCR Reg:</b> {self.doc.get('confianza_score', 0)}%"
         )
 
         self.btn_copy.setEnabled(bool(self.doc.get("nombre_propuesto")))

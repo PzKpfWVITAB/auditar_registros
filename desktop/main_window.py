@@ -200,6 +200,7 @@ class MainWindow(QMainWindow):
         for key, label in [
             ("TODOS", "Todos"),
             ("DISCREPANCIAS", "Solo Discrepancias"),
+            ("DISCREPANCIA_DELEGACION", "Discrepancia Delegación"),
             ("COLISION_BD", "Chocan en BD"),
             ("CORRECTO", "Correctos"),
             ("ERROR_LECTURA", "Errores")
@@ -262,11 +263,12 @@ class MainWindow(QMainWindow):
         # 5. TABLA DE RESULTADOS
         # ------------------------------------------------------------------
         self.table = QTableWidget()
-        self.table.setColumnCount(12)
+        self.table.setColumnCount(16)
         self.table.setHorizontalHeaderLabels([
-            "Estado", "Archivo Actual", "Reg. Actual", "Reg. Encabezado",
+            "Estado", "Archivo Actual", "Delegación Archivo", "Municipio Detectado",
+            "Del. Coincide", "Conf. Del.", "Reg. Actual", "Reg. Encabezado",
             "Reg. Pie", "Doble Marca", "Antecedente (Trampa)",
-            "Nombre Propuesto", "Choca en BD", "Confianza", "Diagnóstico / Motivo", "Acciones"
+            "Nombre Propuesto", "Choca en BD", "Conf. Reg.", "Diagnóstico / Motivo", "Acciones"
         ])
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -276,18 +278,22 @@ class MainWindow(QMainWindow):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionResizeMode(10, QHeaderView.Stretch)
-        self.table.setColumnWidth(0, 145)
-        self.table.setColumnWidth(1, 160)
-        self.table.setColumnWidth(2, 80)
-        self.table.setColumnWidth(3, 105)
-        self.table.setColumnWidth(4, 75)
-        self.table.setColumnWidth(5, 80)
-        self.table.setColumnWidth(6, 125)
-        self.table.setColumnWidth(7, 160)
-        self.table.setColumnWidth(8, 95)
-        self.table.setColumnWidth(9, 75)
-        self.table.setColumnWidth(11, 130)
+        header.setSectionResizeMode(14, QHeaderView.Stretch)
+        self.table.setColumnWidth(0, 140)   # Estado
+        self.table.setColumnWidth(1, 150)   # Archivo Actual
+        self.table.setColumnWidth(2, 130)   # Delegación Archivo
+        self.table.setColumnWidth(3, 130)   # Municipio Detectado
+        self.table.setColumnWidth(4, 80)    # Del. Coincide
+        self.table.setColumnWidth(5, 75)    # Conf. Del.
+        self.table.setColumnWidth(6, 75)    # Reg. Actual
+        self.table.setColumnWidth(7, 100)   # Reg. Encabezado
+        self.table.setColumnWidth(8, 70)    # Reg. Pie
+        self.table.setColumnWidth(9, 75)    # Doble Marca
+        self.table.setColumnWidth(10, 120)  # Antecedente
+        self.table.setColumnWidth(11, 150)  # Nombre Propuesto
+        self.table.setColumnWidth(12, 85)   # Choca en BD
+        self.table.setColumnWidth(13, 75)   # Conf. Reg.
+        self.table.setColumnWidth(15, 110)  # Acciones
 
         root_layout.addWidget(self.table, 1)
 
@@ -498,36 +504,71 @@ class MainWindow(QMainWindow):
             self.table.setItem(row_idx, 0, item_estado)
             self.table.setItem(row_idx, 1, QTableWidgetItem(doc["nombre_archivo"]))
 
+            # Delegación Archivo
+            it_del_arch = QTableWidgetItem(str(doc.get("delegacion_archivo_nombre") or doc.get("delegacion_actual") or "-"))
+            self.table.setItem(row_idx, 2, it_del_arch)
+
+            # Municipio Detectado
+            it_mun = QTableWidgetItem(str(doc.get("municipio_detectado") or "-"))
+            self.table.setItem(row_idx, 3, it_mun)
+
+            # Del. Coincide
+            del_coin = doc.get("delegacion_coincide")
+            del_str = "SÍ" if del_coin == 1 else ("NO" if del_coin == 0 else "-")
+            it_del_coin = QTableWidgetItem(del_str)
+            it_del_coin.setTextAlignment(Qt.AlignCenter)
+            if del_coin == 1:
+                it_del_coin.setForeground(QColor("#166534"))
+                it_del_coin.setBackground(QColor("#dcfce7"))
+            elif del_coin == 0:
+                it_del_coin.setForeground(QColor("#991b1b"))
+                it_del_coin.setBackground(QColor("#fee2e2"))
+                it_del_coin.setFont(bold_font)
+            self.table.setItem(row_idx, 4, it_del_coin)
+
+            # Conf. Del.
+            conf_del = doc.get("confianza_delegacion", 0)
+            it_conf_del = QTableWidgetItem(f"{conf_del}%" if doc.get("municipio_detectado") else "-")
+            it_conf_del.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row_idx, 5, it_conf_del)
+
+            # Reg. Actual
             it_actual = QTableWidgetItem(str(doc.get("registro_actual") or "-"))
             it_actual.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 2, it_actual)
+            self.table.setItem(row_idx, 6, it_actual)
 
+            # Reg. Encabezado
             it_enc = QTableWidgetItem(str(doc.get("registro_encabezado") or "-"))
             it_enc.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 3, it_enc)
+            self.table.setItem(row_idx, 7, it_enc)
 
+            # Reg. Pie
             it_pie = QTableWidgetItem(str(doc.get("registro_pie") or "-"))
             it_pie.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 4, it_pie)
+            self.table.setItem(row_idx, 8, it_pie)
 
+            # Doble Marca
             doble = "SÍ" if doc.get("coincide_encabezado_pie") else "NO"
             it_doble = QTableWidgetItem(doble)
             it_doble.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 5, it_doble)
+            self.table.setItem(row_idx, 9, it_doble)
 
+            # Antecedente (Trampa)
             it_ant = QTableWidgetItem(str(doc.get("registro_antecedente") or "-"))
             it_ant.setTextAlignment(Qt.AlignCenter)
             if doc.get("registro_antecedente"):
                 it_ant.setForeground(QColor("#b91c1c"))
                 it_ant.setFont(bold_font)
-            self.table.setItem(row_idx, 6, it_ant)
+            self.table.setItem(row_idx, 10, it_ant)
 
+            # Nombre Propuesto
             it_prop = QTableWidgetItem(str(doc.get("nombre_propuesto") or "-"))
             if doc.get("nombre_propuesto"):
                 it_prop.setForeground(QColor("#047857"))
                 it_prop.setFont(bold_font)
-            self.table.setItem(row_idx, 7, it_prop)
+            self.table.setItem(row_idx, 11, it_prop)
 
+            # Choca en BD
             choca = bool(doc.get("colision_bd"))
             it_col = QTableWidgetItem("SÍ (CHOCA)" if choca else ("NO" if doc.get("nombre_propuesto") else "-"))
             it_col.setTextAlignment(Qt.AlignCenter)
@@ -535,16 +576,18 @@ class MainWindow(QMainWindow):
                 it_col.setForeground(QColor("#991b1b"))
                 it_col.setBackground(QColor("#fee2e2"))
                 it_col.setFont(bold_font)
-            self.table.setItem(row_idx, 8, it_col)
+            self.table.setItem(row_idx, 12, it_col)
 
+            # Conf. Reg.
             it_conf = QTableWidgetItem(f"{doc.get('confianza_score', 0)}%")
             it_conf.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_idx, 9, it_conf)
+            self.table.setItem(row_idx, 13, it_conf)
 
+            # Diagnóstico / Motivo
             motivo = doc.get("motivo_discrepancia") or "-"
             it_mot = QTableWidgetItem(motivo)
             it_mot.setToolTip(motivo)
-            self.table.setItem(row_idx, 10, it_mot)
+            self.table.setItem(row_idx, 14, it_mot)
 
             # Botones de acción en celda (solo auditoría: Ver y Reintentar errores)
             actions_widget = QWidget()
@@ -569,7 +612,7 @@ class MainWindow(QMainWindow):
                 btn_ret.clicked.connect(lambda checked, did=doc["id"]: self._retry_single(did))
                 act_layout.addWidget(btn_ret)
 
-            self.table.setCellWidget(row_idx, 11, actions_widget)
+            self.table.setCellWidget(row_idx, 15, actions_widget)
 
     def _set_filter(self, key):
         self.current_filter = key

@@ -5,25 +5,59 @@ from database.connection import get_raw_connection, test_connection
 from config import settings
 
 DEFAULT_REGISTROS_FILE = Path(__file__).resolve().parent / "registros_existentes.txt.gz"
-DISCREPANCY_STATES = ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS")
+DISCREPANCY_STATES = (
+    "DISCREPANCIA_REGISTRO",
+    "DISCREPANCIA_ANIO",
+    "DISCREPANCIA_DELEGACION",
+    "AMBAS_DISCREPANCIAS"
+)
 
 
-def _ensure_colision_column(cursor):
-    """Asegura la existencia de la columna e índice colision_bd en bases existentes."""
+def _ensure_schema_columns(cursor):
+    """Asegura la existencia de las nuevas columnas y tipos de enum en bases de datos existentes."""
     cursor.execute("""
-        SELECT COUNT(*) AS cnt
+        SELECT COLUMN_NAME
         FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = %s
-          AND TABLE_NAME = 'documentos_auditados'
-          AND COLUMN_NAME = 'colision_bd';
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'documentos_auditados';
     """, (settings.DB_NAME,))
-    row = cursor.fetchone() or {}
-    if not row.get("cnt"):
+    existing_cols = {row["COLUMN_NAME"] for row in (cursor.fetchall() or [])}
+
+    if not existing_cols:
+        return
+
+    # 1. Columna colision_bd
+    if "colision_bd" not in existing_cols:
         cursor.execute(
             "ALTER TABLE `documentos_auditados` "
             "ADD COLUMN `colision_bd` TINYINT(1) DEFAULT 0 AFTER `tiempo_proceso_ms`, "
             "ADD INDEX `idx_colision_bd` (`colision_bd`);"
         )
+
+    # 2. Columnas de delegación
+    if "delegacion_archivo_nombre" not in existing_cols:
+        cursor.execute("ALTER TABLE `documentos_auditados` ADD COLUMN `delegacion_archivo_nombre` VARCHAR(120) NULL AFTER `delegacion_actual`;")
+    if "delegacion_detectada_clave" not in existing_cols:
+        cursor.execute("ALTER TABLE `documentos_auditados` ADD COLUMN `delegacion_detectada_clave` VARCHAR(10) NULL AFTER `registro_actual`;")
+    if "municipio_detectado" not in existing_cols:
+        cursor.execute("ALTER TABLE `documentos_auditados` ADD COLUMN `municipio_detectado` VARCHAR(120) NULL AFTER `delegacion_detectada_clave`;")
+    if "delegacion_coincide" not in existing_cols:
+        cursor.execute("ALTER TABLE `documentos_auditados` ADD COLUMN `delegacion_coincide` TINYINT(1) NULL AFTER `municipio_detectado`;")
+    if "confianza_delegacion" not in existing_cols:
+        cursor.execute("ALTER TABLE `documentos_auditados` ADD COLUMN `confianza_delegacion` INT DEFAULT 0 AFTER `delegacion_coincide`;")
+
+    # 3. Actualizar ENUM para incluir DISCREPANCIA_DELEGACION
+    cursor.execute("""
+        ALTER TABLE `documentos_auditados` 
+        MODIFY COLUMN `estado` ENUM(
+            'CORRECTO',
+            'DISCREPANCIA_REGISTRO',
+            'DISCREPANCIA_ANIO',
+            'DISCREPANCIA_DELEGACION',
+            'AMBAS_DISCREPANCIAS',
+            'ERROR_LECTURA',
+            'NOMBRE_INVALIDO'
+        ) NOT NULL;
+    """)
 
 
 def init_database(clean=False):
@@ -57,7 +91,7 @@ def init_database(clean=False):
                     cursor.execute(clean_cmd)
 
             if not clean:
-                _ensure_colision_column(cursor)
+                _ensure_schema_columns(cursor)
         return True, "Base de datos y tablas inicializadas correctamente."
     except Exception as e:
         return False, f"Error inicializando la base de datos: {e}"
@@ -68,7 +102,7 @@ def init_database(clean=False):
 def init_registros_existentes_table():
     """
     Crea específicamente la estructura de la tabla catálogo `registros_existentes`
-    (y la columna `colision_bd` en `documentos_auditados` si la tabla ya existe).
+    (y las columnas necesarias en `documentos_auditados` si la tabla ya existe).
     """
     conn = get_raw_connection(include_database=False)
     try:
@@ -92,7 +126,7 @@ def init_registros_existentes_table():
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'documentos_auditados';
             """, (settings.DB_NAME,))
             if (cursor.fetchone() or {}).get("cnt"):
-                _ensure_colision_column(cursor)
+                _ensure_schema_columns(cursor)
         return True, "Estructura de tabla 'registros_existentes' lista correctamente."
     except Exception as e:
         return False, f"Error creando estructura de 'registros_existentes': {e}"
@@ -301,7 +335,8 @@ def save_audit_result(doc):
             sql = """
                 INSERT INTO `documentos_auditados` (
                     `lote_id`, `nombre_archivo`, `ruta_completa`, `tamano_bytes`,
-                    `delegacion_actual`, `anio_actual`, `registro_actual`,
+                    `delegacion_actual`, `delegacion_archivo_nombre`, `anio_actual`, `registro_actual`,
+                    `delegacion_detectada_clave`, `municipio_detectado`, `delegacion_coincide`, `confianza_delegacion`,
                     `registro_encabezado`, `registro_pie`, `anio_detectado`,
                     `fecha_registro_texto`, `registro_antecedente`,
                     `registro_final_detectado`, `coincide_encabezado_pie`,
@@ -310,7 +345,8 @@ def save_audit_result(doc):
                     `colision_bd`
                 ) VALUES (
                     %(lote_id)s, %(nombre_archivo)s, %(ruta_completa)s, %(tamano_bytes)s,
-                    %(delegacion_actual)s, %(anio_actual)s, %(registro_actual)s,
+                    %(delegacion_actual)s, %(delegacion_archivo_nombre)s, %(anio_actual)s, %(registro_actual)s,
+                    %(delegacion_detectada_clave)s, %(municipio_detectado)s, %(delegacion_coincide)s, %(confianza_delegacion)s,
                     %(registro_encabezado)s, %(registro_pie)s, %(anio_detectado)s,
                     %(fecha_registro_texto)s, %(registro_antecedente)s,
                     %(registro_final_detectado)s, %(coincide_encabezado_pie)s,
@@ -325,8 +361,13 @@ def save_audit_result(doc):
                 "ruta_completa": doc.get("ruta_completa"),
                 "tamano_bytes": doc.get("tamano_bytes", 0),
                 "delegacion_actual": doc.get("delegacion_actual"),
+                "delegacion_archivo_nombre": doc.get("delegacion_archivo_nombre"),
                 "anio_actual": doc.get("anio_actual"),
                 "registro_actual": doc.get("registro_actual"),
+                "delegacion_detectada_clave": doc.get("delegacion_detectada_clave"),
+                "municipio_detectado": doc.get("municipio_detectado"),
+                "delegacion_coincide": 1 if doc.get("delegacion_coincide") is True else (0 if doc.get("delegacion_coincide") is False else None),
+                "confianza_delegacion": doc.get("confianza_delegacion", 0),
                 "registro_encabezado": doc.get("registro_encabezado"),
                 "registro_pie": doc.get("registro_pie"),
                 "anio_detectado": doc.get("anio_detectado"),
@@ -361,8 +402,13 @@ def update_audit_result(doc_id, doc):
             sql = """
                 UPDATE `documentos_auditados`
                 SET `delegacion_actual` = %(delegacion_actual)s,
+                    `delegacion_archivo_nombre` = %(delegacion_archivo_nombre)s,
                     `anio_actual` = %(anio_actual)s,
                     `registro_actual` = %(registro_actual)s,
+                    `delegacion_detectada_clave` = %(delegacion_detectada_clave)s,
+                    `municipio_detectado` = %(municipio_detectado)s,
+                    `delegacion_coincide` = %(delegacion_coincide)s,
+                    `confianza_delegacion` = %(confianza_delegacion)s,
                     `registro_encabezado` = %(registro_encabezado)s,
                     `registro_pie` = %(registro_pie)s,
                     `anio_detectado` = %(anio_detectado)s,
@@ -383,8 +429,13 @@ def update_audit_result(doc_id, doc):
             cursor.execute(sql, {
                 "id": doc_id,
                 "delegacion_actual": doc.get("delegacion_actual"),
+                "delegacion_archivo_nombre": doc.get("delegacion_archivo_nombre"),
                 "anio_actual": doc.get("anio_actual"),
                 "registro_actual": doc.get("registro_actual"),
+                "delegacion_detectada_clave": doc.get("delegacion_detectada_clave"),
+                "municipio_detectado": doc.get("municipio_detectado"),
+                "delegacion_coincide": 1 if doc.get("delegacion_coincide") is True else (0 if doc.get("delegacion_coincide") is False else None),
+                "confianza_delegacion": doc.get("confianza_delegacion", 0),
                 "registro_encabezado": doc.get("registro_encabezado"),
                 "registro_pie": doc.get("registro_pie"),
                 "anio_detectado": doc.get("anio_detectado"),
@@ -435,7 +486,8 @@ def get_audit_summary(lote_id=None):
                 SELECT 
                     COUNT(*) AS total,
                     SUM(CASE WHEN estado = 'CORRECTO' THEN 1 ELSE 0 END) AS correctos,
-                    SUM(CASE WHEN estado IN ('DISCREPANCIA_REGISTRO', 'DISCREPANCIA_ANIO', 'AMBAS_DISCREPANCIAS') THEN 1 ELSE 0 END) AS discrepancias,
+                    SUM(CASE WHEN estado IN ('DISCREPANCIA_REGISTRO', 'DISCREPANCIA_ANIO', 'DISCREPANCIA_DELEGACION', 'AMBAS_DISCREPANCIAS') THEN 1 ELSE 0 END) AS discrepancias,
+                    SUM(CASE WHEN estado = 'DISCREPANCIA_DELEGACION' THEN 1 ELSE 0 END) AS discrepancias_delegacion,
                     SUM(CASE WHEN estado IN ('ERROR_LECTURA', 'NOMBRE_INVALIDO') THEN 1 ELSE 0 END) AS errores,
                     SUM(CASE WHEN coincide_encabezado_pie = 1 THEN 1 ELSE 0 END) AS certeza_doble_marca,
                     SUM(CASE WHEN colision_bd = 1 THEN 1 ELSE 0 END) AS colisiones
@@ -447,6 +499,7 @@ def get_audit_summary(lote_id=None):
             total = res.get("total", 0) or 0
             correctos = res.get("correctos", 0) or 0
             discrepancias = res.get("discrepancias", 0) or 0
+            discrepancias_delegacion = res.get("discrepancias_delegacion", 0) or 0
             errores = res.get("errores", 0) or 0
             colisiones = res.get("colisiones", 0) or 0
             tasa_error = round((discrepancias / total * 100), 2) if total > 0 else 0.0
@@ -455,6 +508,7 @@ def get_audit_summary(lote_id=None):
                 "total": total,
                 "correctos": correctos,
                 "discrepancias": discrepancias,
+                "discrepancias_delegacion": discrepancias_delegacion,
                 "errores": errores,
                 "colisiones": colisiones,
                 "certeza_doble_marca": res.get("certeza_doble_marca", 0) or 0,
@@ -476,9 +530,11 @@ def get_audit_results(filters=None, page=1, page_size=50):
 
             if filters.get("estado"):
                 if filters["estado"] == "DISCREPANCIAS":
-                    conditions.append("estado IN ('DISCREPANCIA_REGISTRO', 'DISCREPANCIA_ANIO', 'AMBAS_DISCREPANCIAS')")
+                    conditions.append("estado IN ('DISCREPANCIA_REGISTRO', 'DISCREPANCIA_ANIO', 'DISCREPANCIA_DELEGACION', 'AMBAS_DISCREPANCIAS')")
                 elif filters["estado"] == "COLISION_BD":
                     conditions.append("colision_bd = 1")
+                elif filters["estado"] == "DISCREPANCIA_DELEGACION":
+                    conditions.append("(estado = 'DISCREPANCIA_DELEGACION' OR delegacion_coincide = 0)")
                 else:
                     conditions.append("estado = %s")
                     params.append(filters["estado"])
@@ -486,9 +542,9 @@ def get_audit_results(filters=None, page=1, page_size=50):
             if filters.get("search"):
                 term = f"%{filters['search']}%"
                 conditions.append(
-                    "(nombre_archivo LIKE %s OR nombre_propuesto LIKE %s OR registro_actual LIKE %s OR registro_final_detectado LIKE %s)"
+                    "(nombre_archivo LIKE %s OR nombre_propuesto LIKE %s OR registro_actual LIKE %s OR registro_final_detectado LIKE %s OR municipio_detectado LIKE %s OR delegacion_archivo_nombre LIKE %s)"
                 )
-                params.extend([term, term, term, term])
+                params.extend([term, term, term, term, term, term])
 
             if filters.get("lote_id"):
                 conditions.append("lote_id = %s")
@@ -505,7 +561,8 @@ def get_audit_results(filters=None, page=1, page_size=50):
             offset = (page - 1) * page_size
             data_sql = f"""
                 SELECT id, lote_id, nombre_archivo, ruta_completa,
-                       delegacion_actual, anio_actual, registro_actual,
+                       delegacion_actual, delegacion_archivo_nombre, anio_actual, registro_actual,
+                       delegacion_detectada_clave, municipio_detectado, delegacion_coincide, confianza_delegacion,
                        registro_encabezado, registro_pie, anio_detectado,
                        registro_antecedente, registro_final_detectado,
                        coincide_encabezado_pie, estado, nombre_propuesto,
@@ -606,12 +663,11 @@ def export_results_to_excel(filepath, estado=None):
     ws.title = "Auditoría OCR"
 
     headers = [
-        "ID", "Nombre Actual", "Delegación", "Año Actual", "Reg. Actual",
-        "Reg. Encabezado", "Reg. Pie", "Coinciden Pie/Encabezado",
-        "Reg. Antecedente (Trampa)", "Reg. Final Detectado", "Año Detectado",
-        "Estado Auditoría", "Nombre Propuesto", "Choca en BD",
-        "Confianza %", "Motivo / Diagnóstico",
-        "Fecha Auditoría", "Ruta Completa"
+        "Estado", "Archivo Actual", "Delegación Archivo", "Municipio Detectado",
+        "Del. Coincide", "Conf. Del. %", "Reg. Actual", "Reg. Encabezado",
+        "Reg. Pie", "Doble Marca", "Antecedente (Trampa)",
+        "Nombre Propuesto", "Choca en BD", "Conf. Reg. %",
+        "Diagnóstico / Motivo", "Ruta Completa"
     ]
     ws.append(headers)
 
@@ -628,28 +684,30 @@ def export_results_to_excel(filepath, estado=None):
 
     for row_idx, doc in enumerate(items, start=2):
         choca = bool(doc.get("colision_bd"))
+        del_coin = doc.get("delegacion_coincide")
+        del_str = "SÍ" if del_coin == 1 else ("NO" if del_coin == 0 else "-")
+        doble = "SÍ" if doc.get("coincide_encabezado_pie") else "NO"
+
         ws.append([
-            doc["id"],
-            doc["nombre_archivo"],
-            doc["delegacion_actual"],
-            doc["anio_actual"],
-            doc["registro_actual"],
-            doc["registro_encabezado"],
-            doc["registro_pie"],
-            "SÍ" if doc["coincide_encabezado_pie"] else "NO",
-            doc["registro_antecedente"],
-            doc["registro_final_detectado"],
-            doc["anio_detectado"],
             doc["estado"],
-            doc["nombre_propuesto"],
+            doc["nombre_archivo"],
+            doc.get("delegacion_archivo_nombre") or doc.get("delegacion_actual") or "-",
+            doc.get("municipio_detectado") or "-",
+            del_str,
+            f"{doc.get('confianza_delegacion', 0)}%",
+            doc["registro_actual"] or "-",
+            doc["registro_encabezado"] or "-",
+            doc["registro_pie"] or "-",
+            doble,
+            doc["registro_antecedente"] or "-",
+            doc["nombre_propuesto"] or "-",
             "SÍ (CHOCA)" if choca else "NO",
-            doc["confianza_score"],
-            doc["motivo_discrepancia"],
-            str(doc["fecha_auditoria"]),
+            f"{doc.get('confianza_score', 0)}%",
+            doc["motivo_discrepancia"] or "-",
             doc["ruta_completa"]
         ])
         if choca:
-            col_cell = ws.cell(row=row_idx, column=14)
+            col_cell = ws.cell(row=row_idx, column=13)
             col_cell.fill = collision_fill
             col_cell.font = collision_font
 
@@ -677,29 +735,31 @@ def export_results_to_csv(filepath, estado=None):
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
         writer.writerow([
-            "ID", "Nombre Actual", "Delegación", "Año Actual", "Reg. Actual",
-            "Reg. Encabezado", "Reg. Pie", "Coinciden Pie/Encabezado",
-            "Reg. Antecedente", "Reg. Final Detectado", "Año Detectado",
-            "Estado", "Nombre Propuesto", "Choca en BD", "Confianza", "Motivo", "Ruta Completa"
+            "Estado", "Archivo Actual", "Delegación Archivo", "Municipio Detectado",
+            "Del. Coincide", "Conf. Del. %", "Reg. Actual", "Reg. Encabezado",
+            "Reg. Pie", "Doble Marca", "Antecedente (Trampa)",
+            "Nombre Propuesto", "Choca en BD", "Conf. Reg. %",
+            "Diagnóstico / Motivo", "Ruta Completa"
         ])
         for doc in items:
+            del_coin = doc.get("delegacion_coincide")
+            del_str = "SÍ" if del_coin == 1 else ("NO" if del_coin == 0 else "-")
             writer.writerow([
-                doc["id"],
-                doc["nombre_archivo"],
-                doc["delegacion_actual"],
-                doc["anio_actual"],
-                doc["registro_actual"],
-                doc["registro_encabezado"],
-                doc["registro_pie"],
-                1 if doc["coincide_encabezado_pie"] else 0,
-                doc["registro_antecedente"],
-                doc["registro_final_detectado"],
-                doc["anio_detectado"],
                 doc["estado"],
-                doc["nombre_propuesto"],
+                doc["nombre_archivo"],
+                doc.get("delegacion_archivo_nombre") or doc.get("delegacion_actual") or "-",
+                doc.get("municipio_detectado") or "-",
+                del_str,
+                f"{doc.get('confianza_delegacion', 0)}%",
+                doc["registro_actual"] or "-",
+                doc["registro_encabezado"] or "-",
+                doc["registro_pie"] or "-",
+                "SÍ" if doc["coincide_encabezado_pie"] else "NO",
+                doc["registro_antecedente"] or "-",
+                doc["nombre_propuesto"] or "-",
                 "SÍ" if doc.get("colision_bd") else "NO",
-                doc["confianza_score"],
-                doc["motivo_discrepancia"],
+                f"{doc.get('confianza_score', 0)}%",
+                doc["motivo_discrepancia"] or "-",
                 doc["ruta_completa"]
             ])
     return len(items)

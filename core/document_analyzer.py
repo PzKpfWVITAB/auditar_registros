@@ -6,6 +6,7 @@ import pymupdf  # PyMuPDF
 from PIL import Image
 from config import settings
 from core.ocr_engine import recognize_image
+from core.delegaciones import detect_delegacion_from_lines, get_delegacion_by_clave, get_delegacion_display
 
 # PyMuPDF (fitz) no es thread-safe a nivel C; este lock protege apertura y renderizado
 _pdf_lock = threading.Lock()
@@ -22,7 +23,7 @@ def parse_filename(filename: str):
     Ejemplo: '01_2011_233.pdf' -> ('01', 2011, '233')
     """
     clean_name = os.path.basename(filename)
-    match = re.search(r"^([A-Za-z0-9]+)_(\d{4})_(\d+)(?:\.pdf)?$", clean_name, re.IGNORECASE)
+    match = re.search(r"^([A-Za-z0-9]+)_(\d{4})_(\d+)(?:\.(?:pdf|jpe?g|png))?$", clean_name, re.IGNORECASE)
     if match:
         return {
             "valido": True,
@@ -104,14 +105,22 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
     parsed_fn = parse_filename(filename)
     file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
 
+    del_info_actual = get_delegacion_by_clave(parsed_fn["delegacion"])
+    del_archivo_nombre = f"{del_info_actual['clave']} - {del_info_actual['nombre']}" if del_info_actual else (parsed_fn["delegacion"] or "-")
+
     base_result = {
         "lote_id": lote_id,
         "nombre_archivo": filename,
         "ruta_completa": file_path,
         "tamano_bytes": file_size,
         "delegacion_actual": parsed_fn["delegacion"],
+        "delegacion_archivo_nombre": del_archivo_nombre,
         "anio_actual": parsed_fn["anio"],
         "registro_actual": parsed_fn["registro"],
+        "delegacion_detectada_clave": None,
+        "municipio_detectado": None,
+        "delegacion_coincide": None,
+        "confianza_delegacion": 0,
         "registro_encabezado": None,
         "registro_pie": None,
         "anio_detectado": None,
@@ -165,6 +174,39 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
             body_lines.append(line)
 
     bounding_boxes = {}
+
+    # -------------------------------------------------------------
+    # ZONA 0: Detección de Delegación / Oficina Registral
+    # -------------------------------------------------------------
+    del_detectada = detect_delegacion_from_lines(header_lines)
+    del_detectada_clave = None
+    municipio_detectado = None
+    confianza_delegacion = 0
+    delegacion_coincide = None
+
+    if del_detectada:
+        del_detectada_clave = del_detectada["clave"]
+        municipio_detectado = del_detectada["nombre"]
+        confianza_delegacion = del_detectada["confianza"]
+
+        # Comparar con la clave del archivo (normalizada con ceros a la izquierda)
+        if parsed_fn["valido"] and parsed_fn["delegacion"]:
+            clave_archivo_norm = str(parsed_fn["delegacion"]).zfill(2)
+            delegacion_coincide = (clave_archivo_norm == del_detectada_clave)
+
+        del_box = del_detectada.get("bounding_box")
+        if del_box:
+            bounding_boxes["delegacion"] = {
+                "text": del_detectada.get("raw_text", del_box.get("text", "")),
+                "x": del_box["x"], "y": del_box["y"], "w": del_box["w"], "h": del_box["h"],
+                "color": "#9333ea",  # Morado
+                "label": f"Delegación: {del_detectada_clave} - {municipio_detectado} ({confianza_delegacion}%)"
+            }
+
+    base_result["delegacion_detectada_clave"] = del_detectada_clave
+    base_result["municipio_detectado"] = municipio_detectado
+    base_result["delegacion_coincide"] = delegacion_coincide
+    base_result["confianza_delegacion"] = confianza_delegacion
 
     # -------------------------------------------------------------
     # ZONA 1: Recuadro Superior (Encabezado: rel_y < 0.24)
@@ -495,44 +537,57 @@ def analyze_document(file_path: str, lote_id: int = None) -> dict:
         # Comparaciones
         reg_coincide = (str(reg_actual) == str(reg_final))
         anio_coincide = (anio_detectado is None) or (int(anio_actual) == int(anio_detectado))
+        # Si la delegación no se detectó claramente, no asumimos discrepancia (del_coincide = True)
+        del_coincide = True if delegacion_coincide is None else bool(delegacion_coincide)
 
-        # Determinar año propuesto
+        # Determinar clave de delegación propuesta y año propuesto
+        delegacion_propuesta = del_detectada_clave if (del_detectada_clave and not del_coincide) else delegacion_actual
         anio_propuesto = anio_detectado if anio_detectado else anio_actual
-        base_result["nombre_propuesto"] = f"{delegacion_actual}_{anio_propuesto}_{reg_final}.pdf"
+        base_result["nombre_propuesto"] = f"{delegacion_propuesta}_{anio_propuesto}_{reg_final}.pdf"
 
-        if reg_coincide and anio_coincide:
+        # Conteo de discrepancias entre los 3 ejes
+        discrepancias_lista = []
+        if not reg_coincide:
+            discrepancias_lista.append(f"Registro (actual: '{reg_actual}', detectado: '{reg_final}')")
+        if not anio_coincide:
+            discrepancias_lista.append(f"Año (actual: '{anio_actual}', detectado: '{anio_detectado}')")
+        if not del_coincide:
+            discrepancias_lista.append(f"Delegación (actual: '{del_archivo_nombre}', detectada: '{del_detectada_clave} - {municipio_detectado}')")
+
+        if not discrepancias_lista:
             base_result["estado"] = "CORRECTO"
             base_result["motivo_discrepancia"] = (
                 f"El archivo está correctamente nombrado. Registro: {reg_final}"
                 + (f" (validado doblemente en pie y encabezado)" if coincide_ambos else "")
+                + (f" | Delegación: {municipio_detectado}" if del_detectada_clave else "")
             )
-        elif not reg_coincide and not anio_coincide:
+        elif len(discrepancias_lista) > 1:
             base_result["estado"] = "AMBAS_DISCREPANCIAS"
-            motivo = (
-                f"Discrepancia doble: Tiene asignado registro '{reg_actual}' y año '{anio_actual}', "
-                f"pero el OCR detectó registro '{reg_final}' y año '{anio_detectado}'."
-            )
+            motivo = f"Discrepancia múltiple detectada en: {', '.join(discrepancias_lista)}."
             if reg_antecedente and (reg_antecedente == reg_actual or str(reg_antecedente) in str(reg_actual)):
                 motivo += f" NOTA: El registro actual parece provenir erróneamente de antecedentes ('{reg_antecedente}')."
             base_result["motivo_discrepancia"] = motivo
         elif not reg_coincide:
             base_result["estado"] = "DISCREPANCIA_REGISTRO"
-            motivo = (
-                f"El archivo tiene registro '{reg_actual}', pero corresponde al registro '{reg_final}'"
-            )
+            motivo = f"El archivo tiene registro '{reg_actual}', pero corresponde al registro '{reg_final}'"
             if coincide_ambos:
                 motivo += " (confirmado al 100% por encabezado y pie de página)."
             else:
                 motivo += "."
-                
             if reg_antecedente:
                 motivo += f" Causa detectada: La herramienta anterior tomó el número de antecedentes '{reg_antecedente}'."
             base_result["motivo_discrepancia"] = motivo
-        else:
+        elif not anio_coincide:
             base_result["estado"] = "DISCREPANCIA_ANIO"
             base_result["motivo_discrepancia"] = (
                 f"El registro '{reg_final}' es correcto, pero el año en el nombre es '{anio_actual}' "
                 f"mientras que la fecha de registro indica '{anio_detectado}'."
+            )
+        else:
+            base_result["estado"] = "DISCREPANCIA_DELEGACION"
+            base_result["motivo_discrepancia"] = (
+                f"El archivo tiene clave de delegación '{delegacion_actual}' ({del_archivo_nombre}), "
+                f"pero el encabezado indica oficina registral '{del_detectada_clave} - {municipio_detectado}'."
             )
 
     base_result["tiempo_proceso_ms"] = int((time.time() - start_time) * 1000)

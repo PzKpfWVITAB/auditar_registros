@@ -24,8 +24,9 @@ def run_desktop_tests():
     # 1. MainWindow
     print("[1/4] Instanciando MainWindow...")
     win = MainWindow()
-    assert win.table.columnCount() == 12
+    assert win.table.columnCount() == 16
     assert "COLISION_BD" in win.filter_buttons
+    assert "DISCREPANCIA_DELEGACION" in win.filter_buttons
     print(f" -> KPI Total en UI: {win.kpi_total['value_label'].text()} | Colisiones: {win.kpi_colisiones['value_label'].text()}")
     print(f" -> Filas cargadas en tabla: {win.table.rowCount()}")
 
@@ -33,6 +34,8 @@ def run_desktop_tests():
     print("[2/4] Probando filtros de tabla...")
     win._set_filter("DISCREPANCIAS")
     print(f" -> Filas en DISCREPANCIAS: {win.table.rowCount()}")
+    win._set_filter("DISCREPANCIA_DELEGACION")
+    print(f" -> Filas en DISCREPANCIA_DELEGACION: {win.table.rowCount()}")
     win._set_filter("COLISION_BD")
     print(f" -> Filas en COLISION_BD: {win.table.rowCount()}")
     win._set_filter("TODOS")

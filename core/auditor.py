@@ -199,7 +199,7 @@ class AuditorManager:
                                         estado = res.get("estado")
                                         if estado == "CORRECTO":
                                             self.correct_files += 1
-                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "DISCREPANCIA_DELEGACION", "AMBAS_DISCREPANCIAS"):
                                             self.discrepancy_files += 1
                                         else:
                                             self.error_files += 1
@@ -224,7 +224,7 @@ class AuditorManager:
                                 estado = res.get("estado")
                                 if estado == "CORRECTO":
                                     self.correct_files += 1
-                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "DISCREPANCIA_DELEGACION", "AMBAS_DISCREPANCIAS"):
                                     self.discrepancy_files += 1
                                 else:
                                     self.error_files += 1
@@ -347,7 +347,7 @@ class AuditorManager:
                                         estado = res.get("estado")
                                         if estado == "CORRECTO":
                                             self.correct_files += 1
-                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                        elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "DISCREPANCIA_DELEGACION", "AMBAS_DISCREPANCIAS"):
                                             self.discrepancy_files += 1
                                             self.add_log(f"[DISCREPANCIA] {f_name} -> Sugerido: {res.get('nombre_propuesto')}")
                                         else:
@@ -385,7 +385,7 @@ class AuditorManager:
                                 estado = res.get("estado")
                                 if estado == "CORRECTO":
                                     self.correct_files += 1
-                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "AMBAS_DISCREPANCIAS"):
+                                elif estado in ("DISCREPANCIA_REGISTRO", "DISCREPANCIA_ANIO", "DISCREPANCIA_DELEGACION", "AMBAS_DISCREPANCIAS"):
                                     self.discrepancy_files += 1
                                 else:
                                     self.error_files += 1
